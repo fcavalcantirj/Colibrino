@@ -31,6 +31,10 @@
     {
       "fact": "Wokwi can execute a generic ESP32-S3 DevKitC firmware image, but its documented board list does not provide a complete StickS3 model.",
       "validation": "Official Wokwi ESP32 guide, Wokwi CLI documentation, Context7 Wokwi documentation index, and a successful Wokwi CLI run of the cross-compiled simulator harness"
+    },
+    {
+      "fact": "No public tool currently provides a complete StickS3 emulator.",
+      "validation": "M5Stack lv_m5_emulator is a native SDL UI tool whose current targets omit StickS3; UiFlow2 runs programs on a connected device; Espressif QEMU covers the ESP32-S3 SoC only; Wokwi exposes a generic ESP32-S3 rather than the complete board."
     }
   ],
   "tasks": [
@@ -103,7 +107,33 @@
   ],
   "simulation_boundary": {
     "validated_in_wokwi": "ESP32-S3 compilation and execution of sensor-independent motion, statistics, blink detection, and feasibility state-machine logic.",
-    "requires_sticks3_hardware": "BMI270 initialization and axis orientation, M5PM1 power control, display, buttons, internal IR electrical and optical behavior, composite TinyUSB CDC/HID enumeration, and end-to-end cursor/click behavior."
+    "requires_sticks3_hardware": "BMI270 initialization and axis orientation, M5PM1 power control, display, buttons, internal IR electrical and optical behavior, composite TinyUSB CDC/HID enumeration, and end-to-end cursor/click behavior.",
+    "available_tools": [
+      {
+        "name": "Wokwi",
+        "scope": "Generic ESP32-S3 CPU execution and configurable virtual components",
+        "use_in_project": "Automated cross-compiled portable-logic gate",
+        "not_covered": "Complete StickS3 board, onboard IR optics, and exact composite USB behavior"
+      },
+      {
+        "name": "M5Stack lv_m5_emulator",
+        "scope": "Native SDL rendering for M5GFX and LVGL user interfaces",
+        "use_in_project": "Optional future display-layout work only",
+        "not_covered": "StickS3 target, ESP32-S3 CPU, BMI270, M5PM1, RMT, IR optics, and USB HID"
+      },
+      {
+        "name": "UiFlow2",
+        "scope": "Visual UI editor and deployment environment",
+        "use_in_project": "None for the Arduino and PlatformIO firmware",
+        "not_covered": "Hardware-free execution; Run Once requires a connected StickS3"
+      },
+      {
+        "name": "Espressif QEMU",
+        "scope": "ESP32-S3 CPU, memory, and selected SoC peripherals",
+        "use_in_project": "No current integration; moving the Arduino target would add cost without resolving the optical question",
+        "not_covered": "Complete StickS3 board devices and physical eyelid reflection"
+      }
+    ]
   },
   "sensor_purchase_decision": {
     "onboard_ir_pass": "Keep the integrated IR path only if two repeat runs pass and at least four of five deliberate blinks are detected in each run with no false click during a 30-second open-eye control.",

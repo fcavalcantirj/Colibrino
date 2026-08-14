@@ -1,3 +1,8 @@
+// StickS3 application layer.
+//
+// This file is intentionally the only owner of host HID side effects and the
+// M5PM1 external-power decision. Portable motion and blink code can recommend a
+// delta or event, but only the guarded application state may send it to USB.
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <USB.h>
@@ -24,8 +29,11 @@ using colibrino::PointerDelta;
 using colibrino::StickS3IrProbe;
 using colibrino::Vec3;
 
+/// User-visible pages. Mode is also a safety boundary: only kMouse may emit HID.
 enum class AppMode : uint8_t { kIrProbe, kMotionMonitor, kMouse };
 
+// Long-lived device services. USB interfaces are registered before USB.begin()
+// so CDC diagnostics and HID mouse enumerate as one native TinyUSB composite.
 USBHIDMouse mouse;
 USBCDC diagnostics;
 StickS3IrProbe ir_probe;
@@ -42,6 +50,8 @@ MotionController motion(MotionConfig{
 });
 GyroBiasCalibrator gyro_calibrator;
 
+// Safety and input latches. The `*_hold_latched` flags ensure a continued
+// physical hold toggles state once rather than every loop iteration.
 AppMode mode = AppMode::kIrProbe;
 bool ir_powered = false;
 bool ir_hold_latched = false;
@@ -81,6 +91,8 @@ void drawHeader() {
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 }
 
+// Display routines are projections of application state. They never change
+// arming, power, calibration, or feasibility decisions.
 void drawIrScreen(uint32_t now_ms) {
   drawHeader();
   M5.Display.setCursor(4, 31);
@@ -163,6 +175,8 @@ void updateDisplay(uint32_t now_ms) {
 }
 
 void cycleMode() {
+  // Do not abandon a guided capture midway, and never leave mouse mode while
+  // armed. These constraints keep the screen aligned with active side effects.
   if (mode == AppMode::kIrProbe) {
     if (feasibility.stage() != FeasibilityStage::kIdle &&
         feasibility.stage() != FeasibilityStage::kResult) {
@@ -191,6 +205,8 @@ void enableIrProbe() {
 }
 
 void disableIrProbe() {
+  // A power-off invalidates all current-boot optical evidence. Reusing the old
+  // thresholds after geometry or power changed could enable false clicks.
   ir_powered = false;
   feasibility.cancel();
   runtime_blink_detector = {};
@@ -208,6 +224,8 @@ void updateIr(uint32_t now_ms) {
     return;
   }
   latest_ir = sample;
+  // Advance the clock before observing so a sample at a stage boundary is
+  // attributed to the newly active stage rather than the expired one.
   feasibility.tick(now_ms);
   feasibility.observe(now_ms, sample.valid, sample.value);
 
@@ -236,6 +254,8 @@ void updateIr(uint32_t now_ms) {
         static_cast<unsigned long>(result.blink_frames),
         result.detected_blinks);
     if (result.passes) {
+      // Copy the calibrated polarity and thresholds, then clear only temporal
+      // state so guided blinks cannot leak into runtime click detection.
       runtime_blink_detector = feasibility.makeDetector();
       runtime_blink_detector.reset();
     }
@@ -258,6 +278,8 @@ void updateImu(uint32_t now_ms) {
   gyro_dps = {data.gyro.x, data.gyro.y, data.gyro.z};
 
   if (!motion_calibrated) {
+    // Calibration is deliberately per boot. Motion restarts the entire window
+    // instead of accepting a noisy bias that could cause pointer drift.
     gyro_calibrator.add(gyro_dps);
     if (now_ms - calibration_started_ms >= 2500) {
       if (gyro_calibrator.finish(gyro_bias)) {
@@ -290,6 +312,9 @@ void updateImu(uint32_t now_ms) {
 }
 
 void handleButtons(uint32_t now_ms) {
+  // Long holds control power/arming; taps navigate or trigger deliberate tests.
+  // M5Unified owns debouncing and click/hold timing, while local latches make
+  // the state toggles edge-like.
   if (mode == AppMode::kIrProbe) {
     if (M5.BtnB.pressedFor(2000) && !ir_hold_latched) {
       ir_hold_latched = true;
@@ -336,6 +361,8 @@ void handleButtons(uint32_t now_ms) {
 }  // namespace
 
 void setup() {
+  // Disable every unused internal subsystem that could interfere with IR or
+  // draw power. `output_power=false` keeps EXT_5V in its safe input/off mode.
   auto m5_config = M5.config();
   m5_config.serial_baudrate = 0;
   m5_config.internal_imu = true;
@@ -356,6 +383,7 @@ void setup() {
 
   diagnostics.begin(115200);
   mouse.begin();
+  // Interface descriptors must be configured before starting the USB device.
   USB.productName("Colibrino StickS3 Prototype");
   USB.manufacturerName("Colibrino");
   USB.begin();
@@ -371,6 +399,9 @@ void setup() {
 }
 
 void loop() {
+  // One cooperative pass: sample physical inputs, update safety state, process
+  // sensors, then render. The 1 ms yield also services Arduino/USB background
+  // work; motion integration uses sensor timestamps rather than this delay.
   M5.update();
   const uint32_t now_ms = millis();
   handleButtons(now_ms);

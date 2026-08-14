@@ -12,6 +12,8 @@ void RunningStats::clear() {
 }
 
 void RunningStats::add(float value) {
+  // Welford's recurrence avoids the catastrophic cancellation of E[x^2]-E[x]^2
+  // and does not retain the capture window in RAM.
   ++count_;
   const float delta = value - mean_;
   mean_ += delta / static_cast<float>(count_);
@@ -39,6 +41,8 @@ SeparationResult analyzeSeparation(const RunningStats& open,
   result.closed_is_higher = result.closed_mean > result.open_mean;
 
   if (open.count() < minimum_samples || closed.count() < minimum_samples) {
+    // Means are still returned for diagnostics, but sparse captures can never
+    // unlock runtime blink detection.
     return result;
   }
 
@@ -65,6 +69,8 @@ void BlinkDetector::configure(const SeparationResult& calibration) {
   closed_since_ms_ = 0;
   last_blink_ms_ = 0;
 
+  // Separate enter/exit thresholds prevent noise near the midpoint from
+  // manufacturing rapid close/open transitions.
   const float difference =
       std::fabs(calibration.closed_mean - calibration.open_mean);
   const float hysteresis = difference * 0.12f;
@@ -98,6 +104,8 @@ bool BlinkDetector::update(uint32_t now_ms, float signal_value) {
   if (closed_ && !next_closed) {
     closed_ = false;
     const uint32_t duration = now_ms - closed_since_ms_;
+    // Reject electrical glitches and long closures that are unlikely to be a
+    // deliberate human blink. The refractory gate prevents double clicks.
     const bool duration_ok = duration >= 40 && duration <= 650;
     const bool refractory_ok =
         last_blink_ms_ == 0 || now_ms - last_blink_ms_ >= 250;
@@ -134,6 +142,8 @@ void BlinkFeasibilityProtocol::cancel() {
 }
 
 void BlinkFeasibilityProtocol::tick(uint32_t now_ms) {
+  // Each transition records `now_ms`; delayed loops do not retroactively run
+  // multiple capture stages with the same sample.
   const uint32_t elapsed = stageElapsedMs(now_ms);
   switch (stage_) {
     case FeasibilityStage::kPrepareOpen:
@@ -177,6 +187,8 @@ void BlinkFeasibilityProtocol::tick(uint32_t now_ms) {
 
 void BlinkFeasibilityProtocol::observe(uint32_t now_ms, bool valid,
                                        float signal_value) {
+  // Invalid frames remain absent from statistics. Frame counts in the result
+  // therefore provide direct evidence of how much usable data each stage saw.
   if (!valid) {
     return;
   }
@@ -212,6 +224,8 @@ void BlinkFeasibilityProtocol::advance(FeasibilityStage next,
 }
 
 void BlinkFeasibilityProtocol::finalizeSeparation() {
+  // Detector configuration may intentionally remain disabled when calibration
+  // fails. The subsequent blink stage still gathers a frame count for diagnosis.
   result_.separation = analyzeSeparation(open_, closed_);
   detector_.configure(result_.separation);
 }

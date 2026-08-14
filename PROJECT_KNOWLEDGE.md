@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-14T23:26:51Z — HEAD 9817312
+
+Reworked the root and StickS3 READMEs into complete project and operating guides, annotated every StickS3 interface and implementation boundary, expanded `AGENTS.md` with the full safety, architecture, simulator, test, and hardware-decision context, and recorded the current emulator inventory. Public M5Stack, UiFlow2, Espressif QEMU, and Wokwi evidence confirms that no complete StickS3 emulator exists; the fresh device remains mandatory for onboard-IR feasibility and the TCRT5000 decision.
+
 ## 2026-08-14T23:14:25Z — HEAD 4790d38
 
 Added and executed a reproducible Wokwi CLI gate for the committed StickS3 branch. A generic ESP32-S3 image now runs the production portable motion and blink-analysis sources, eight deterministic checks pass in Wokwi, the local simulator token is kept in an ignored repository `.env`, and documentation now distinguishes simulated logic from the BMI270, M5PM1, IR optics, display, button, and TinyUSB behavior that still requires the fresh StickS3.
@@ -18,7 +22,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The analyzed commit is `4790d3887b1338f9a46becf0d786a44ae103628d` on local branch `agent/sticks3-port`, matching `origin/agent/sticks3-port` before the simulator follow-up changes. Local and remote `master` remain at upstream-derived commit `870cf2333915872fd3dc88d5c980a3c63dc375c8`.
+The analyzed commit is `9817312d164bc2f1b3ef6c6ef13ada22a7d12554` on local branch `agent/sticks3-port`, matching `origin/agent/sticks3-port` before this documentation and annotation pass. It contains the guarded StickS3 prototype and Wokwi gate. Local and remote `master` remain at upstream-derived commit `870cf2333915872fd3dc88d5c980a3c63dc375c8` until the user-requested merge completes.
 
 ### Repository lineage
 
@@ -26,7 +30,7 @@ The configured origin is the public fork `fcavalcantirj/Colibrino`. GitHub ident
 
 ### Activity and maturity
 
-The latest firmware-affecting commit is from January 2023, and the latest repository commit is a README update from 2025-01-29. The upstream repository was not archived as of this capture, but it has no current CI, release tags, open pull requests, or recent firmware work. Treat the implementation as an old hardware prototype rather than a maintained production firmware.
+Before the successor work in this session, the latest upstream firmware-affecting commit was from January 2023 and the latest upstream repository commit was a README update from 2025-01-29. The upstream repository was not archived as of this capture, but it had no current CI, release tags, open pull requests, or recent firmware work. Treat the AVR implementation as an old hardware prototype; the new StickS3 path resumed local development in August 2026 but remains pre-hardware-validation.
 
 # Runtime
 
@@ -50,7 +54,7 @@ The documented assembly uses an MPU-6050 accelerometer and gyroscope attached to
 
 ### Language and documentation
 
-Firmware is Arduino C and C++. The user documentation and most project-specific comments are Portuguese. Some comments in `blink.cpp` contain replacement characters from prior encoding damage.
+Firmware is Arduino C and C++. The root landing page is bilingual, the detailed StickS3 guide and new source annotations are English, and the legacy user documentation and most legacy comments are Portuguese. Some comments in `blink.cpp` contain replacement characters from prior encoding damage.
 
 ### License
 
@@ -382,6 +386,16 @@ Assumption: a wireless StickS3 variant is also feasible as Bluetooth Low Energy 
 
 Assumption: "ESP32" must be resolved to a specific chip and board. The original ESP32 supports Bluetooth Classic and BLE but lacks the ESP32-S3 native USB device path, making BLE HID the normal mouse transport. ESP32-S2 and ESP32-S3 support native USB HID; C-series capabilities differ. Pinout, sensor, power, and HID libraries must therefore be target-specific.
 
+### Emulator inventory
+
+No public tool reviewed on 2026-08-14 emulates the complete StickS3. M5Stack's official `lv_m5_emulator` compiles M5GFX and LVGL UI code as a native SDL application; its current PlatformIO targets cover Core, Core2, CoreS3, StickC Plus, StickC Plus2, Dial, and Tab5, but not StickS3. It is a display-development tool rather than an ESP32-S3 or peripheral emulator.
+
+UiFlow2 supports StickS3 as a deployment target, but its documentation requires a physical device connected by USB or access code and states that `Run Once` runs the program on that device. Its visual canvas is not a hardware emulator.
+
+Espressif QEMU emulates the ESP32-S3 CPU, memory, and selected SoC peripherals. Its graphical support uses a virtual framebuffer that does not exist in the actual SoC. It does not supply StickS3 models for the BMI270, M5PM1, ST7789 wiring, integrated demodulating IR receiver, optical geometry, or full board-level USB behavior.
+
+Wokwi remains the most useful automation layer for this repository because it runs the generic ESP32-S3 image and portable production sources. Assumption: adding M5Stack's UI emulator could help future display-layout work, and adding QEMU could help lower-level ESP-IDF code, but neither would reduce the physical evidence required for the current blink-sensor decision.
+
 ### Port architecture boundary
 
 The StickS3 prototype separates portable motion control and signal analysis from the RMT source and application. `BlinkInput` supplies normalized sensor-neutral samples, allowing a future analog TCRT5000 producer without changing classification or USB click behavior. HID remains in the application layer behind physical arming and validity gates. A generic ESP32 BLE transport is not implemented.
@@ -393,6 +407,8 @@ The StickS3 motion path uses the BMI270 sample timestamp for actual `dt`; gaps a
 ### Port source references
 
 The authoritative StickS3 product and pin documentation is `https://docs.m5stack.com/en/core/StickS3`. Arduino-ESP32 documents ESP32-S2 and ESP32-S3 USB HID classes at `https://docs.espressif.com/projects/arduino-esp32/en/latest/esp-idf_component.html`, and Espressif's Bluetooth capability matrix is at `https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/bt-architecture/overview.html`.
+
+Simulator scope was checked against `https://github.com/m5stack/lv_m5_emulator`, its current `platformio.ini`, the StickS3 UiFlow2 workflow at `https://docs.m5stack.com/en/uiflow2/sticks3/program`, Espressif's ESP32-S3 QEMU guide at `https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/tools/qemu.html`, and Wokwi's ESP32 guide at `https://docs.wokwi.com/guides/esp32`.
 
 # Constraints for future changes
 

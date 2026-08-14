@@ -23,6 +23,7 @@ void GyroBiasCalibrator::reset() {
 }
 
 void GyroBiasCalibrator::add(const Vec3& gyro_dps) {
+  // Welford's online update is numerically stable and needs constant memory.
   ++count_;
   const float n = static_cast<float>(count_);
 
@@ -70,6 +71,8 @@ void MotionController::reset() {
 
 PointerDelta MotionController::update(const Vec3& gyro_dps,
                                       float dt_seconds) {
+  // Negative/zero intervals indicate invalid ordering. Long intervals often
+  // mean a stall or resume; integrating them would turn one sample into a jump.
   if (!(dt_seconds > 0.0f) || dt_seconds > 0.2f) {
     return {};
   }
@@ -82,9 +85,13 @@ PointerDelta MotionController::update(const Vec3& gyro_dps,
       corrected.at(config_.vertical_axis) * config_.vertical_sign;
 
   const float alpha = std::clamp(config_.low_pass_alpha, 0.0f, 1.0f);
+  // Exponential filtering attenuates hand tremor and sensor noise without a
+  // sample buffer. Tuning remains mounting- and user-specific.
   horizontal_filtered_ += alpha * (horizontal - horizontal_filtered_);
   vertical_filtered_ += alpha * (vertical - vertical_filtered_);
 
+  // Angular rate (degrees/second) times dt becomes degrees; gain converts it
+  // to pixels. Fractional residuals are retained to preserve slow motion.
   horizontal_accumulator_ +=
       applyDeadzone(horizontal_filtered_, config_.deadzone_dps) *
       config_.pixels_per_degree * dt_seconds;
@@ -101,6 +108,8 @@ float MotionController::applyDeadzone(float value, float deadzone) {
   if (magnitude <= deadzone) {
     return 0.0f;
   }
+  // Subtracting the radius rather than snapping directly to `value` avoids a
+  // discontinuity at the deadzone edge.
   return std::copysign(magnitude - deadzone, value);
 }
 

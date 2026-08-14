@@ -1,5 +1,6 @@
 #!/bin/sh
 
+# Reproducible software-only gate. It never uploads to a physical device.
 set -eu
 
 script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -7,6 +8,7 @@ project_directory=$(CDPATH= cd -- "$script_directory/.." && pwd)
 repository_directory=$(CDPATH= cd -- "$project_directory/.." && pwd)
 
 if [ -f "$repository_directory/.env" ]; then
+  # Export dotenv assignments for Wokwi without printing their values.
   set -a
   . "$repository_directory/.env"
   set +a
@@ -40,8 +42,11 @@ if [ -z "$wokwi_cli" ]; then
 fi
 
 cd "$project_directory"
+# Build first so wokwi.toml always points to a current ELF and firmware image.
 "$platformio_cli" run -e wokwi-esp32s3
+# Lint the virtual wiring independently from firmware execution.
 "$wokwi_cli" lint . --warnings-as-errors
+# A timeout or missing PASS marker is a failure; an explicit FAIL exits sooner.
 "$wokwi_cli" . \
   --timeout 15000 \
   --expect-text COLIBRINO_SIM_PASS \

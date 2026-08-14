@@ -1,5 +1,10 @@
 #if defined(COLIBRINO_WOKWI)
 
+// Deterministic ESP32-S3 smoke firmware for Wokwi.
+//
+// This intentionally excludes M5Unified, board power, display, IR hardware, and
+// USB HID. It compiles the real portable production sources under the pinned
+// ESP32-S3 Arduino toolchain and emits machine-readable pass/fail markers.
 #include <Arduino.h>
 
 #include <cmath>
@@ -11,6 +16,8 @@ namespace {
 
 bool all_passed = true;
 
+// One failing check is sticky so the final marker cannot be accidentally
+// restored to PASS by a later successful check.
 void check(const char* name, bool passed) {
   Serial.printf("CHECK,%s,%s\n", name, passed ? "PASS" : "FAIL");
   all_passed = all_passed && passed;
@@ -135,6 +142,8 @@ void validateFeasibilityProtocol() {
 }  // namespace
 
 void setup() {
+  // UART0 is connected to Wokwi's serial monitor in diagram.json. The startup
+  // delay lets the virtual monitor attach before the first marker is emitted.
   Serial.begin(115200);
   delay(1000);
   Serial.println("COLIBRINO_SIM_START");

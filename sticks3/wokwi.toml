@@ -1,4 +1,5 @@
 [wokwi]
+# Paths are produced by PlatformIO's `wokwi-esp32s3` environment.
 version = 1
 firmware = ".pio/build/wokwi-esp32s3/firmware.bin"
 elf = ".pio/build/wokwi-esp32s3/firmware.elf"

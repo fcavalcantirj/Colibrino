@@ -67,6 +67,8 @@ bool StickS3IrProbe::begin() {
 }
 
 bool StickS3IrProbe::poll(uint32_t now_ms, BlinkSignalSample& sample) {
+  // Always clear caller-visible data first so an early return cannot reuse a
+  // valid sample from a previous poll.
   sample = {};
   sample.timestamp_ms = now_ms;
   if (!initialized_ || now_ms - last_transmit_ms_ < config::kIrSampleIntervalMs) {
@@ -75,6 +77,7 @@ bool StickS3IrProbe::poll(uint32_t now_ms, BlinkSignalSample& sample) {
   last_transmit_ms_ = now_ms;
 
   if (receiver_armed_ && receiveComplete()) {
+    // Consume a late completion from the previous envelope before rearming.
     fillSample(now_ms, sample);
     receiver_armed_ = false;
   }
@@ -157,6 +160,8 @@ void StickS3IrProbe::fillSample(uint32_t now_ms,
     }
   }
 
+  // Active-low matches the integrated demodulating receiver. The ratio removes
+  // absolute frame length but is not equivalent to analog light intensity.
   sample.valid = symbol_count > 0 && sample.total_us > 0;
   sample.value = sample.valid
                      ? static_cast<float>(sample.active_us) /

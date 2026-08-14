@@ -1,5 +1,7 @@
 #include <unity.h>
 
+// Native tests exercise the same portable source compiled into production and
+// Wokwi. They intentionally contain no Arduino or M5Stack dependencies.
 #include "colibrino/motion_controller.h"
 
 using colibrino::GyroBiasCalibrator;

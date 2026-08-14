@@ -1,5 +1,7 @@
 #include <unity.h>
 
+// These cases protect the minimum optical evidence and human-timing gates that
+// must pass before the application can configure runtime blink clicks.
 #include "colibrino/signal_analysis.h"
 
 using colibrino::BlinkDetector;
