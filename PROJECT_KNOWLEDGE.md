@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-14T23:30:44Z — HEAD 8d91076
+
+Fast-forwarded the fully validated `agent/sticks3-port` history into local and remote `master`. Both branches now contain the guarded StickS3 firmware, Wokwi gate, complete README set, source annotations, agent instructions, and hardware acceptance plan; the working tree is clean apart from ignored local credentials and PlatformIO output.
+
 ## 2026-08-14T23:26:51Z — HEAD 9817312
 
 Reworked the root and StickS3 READMEs into complete project and operating guides, annotated every StickS3 interface and implementation boundary, expanded `AGENTS.md` with the full safety, architecture, simulator, test, and hardware-decision context, and recorded the current emulator inventory. Public M5Stack, UiFlow2, Espressif QEMU, and Wokwi evidence confirms that no complete StickS3 emulator exists; the fresh device remains mandatory for onboard-IR feasibility and the TCRT5000 decision.
@@ -22,7 +26,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The analyzed commit is `9817312d164bc2f1b3ef6c6ef13ada22a7d12554` on local branch `agent/sticks3-port`, matching `origin/agent/sticks3-port` before this documentation and annotation pass. It contains the guarded StickS3 prototype and Wokwi gate. Local and remote `master` remain at upstream-derived commit `870cf2333915872fd3dc88d5c980a3c63dc375c8` until the user-requested merge completes.
+The last fully analyzed source commit is `8d91076c19f166d7b7be51fb7a1132c56ec13f53`. It is the fast-forward merge point and retained `agent/sticks3-port` tip, containing the guarded StickS3 prototype, Wokwi gate, complete documentation, and source annotations. `master` contains that revision plus this knowledge-only merge-state record; no firmware behavior changed afterward.
 
 ### Repository lineage
 
@@ -328,7 +332,7 @@ Across history, `README.md` is the most frequently changed current file with 23 
 
 ### Branch layout
 
-Upstream retains `master`, `brunoo`, `dwellClick`, `henrique`, `polly`, and `tcrt5000`. Every upstream non-master branch tip is already an ancestor of `master`; they are historical topic branches, not pending work. The local checkout is now on `agent/sticks3-port`, tracking `origin/agent/sticks3-port`; local `master` remains aligned with `origin/master`.
+Upstream retains `master`, `brunoo`, `dwellClick`, `henrique`, `polly`, and `tcrt5000`. Every upstream non-master branch tip is already an ancestor of the historical upstream `master`; they are historical topic branches, not pending work. The local checkout is on `master`, tracking `origin/master`. The completed `agent/sticks3-port` branch is retained at the source merge point; `master` may contain later bookkeeping-only knowledge commits.
 
 ### GitHub issue state
 
