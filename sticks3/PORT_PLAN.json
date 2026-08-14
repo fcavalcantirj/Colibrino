@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "target": {
+    "device": "M5Stack StickS3",
+    "soc": "ESP32-S3-PICO-1-N8R8",
+    "framework": "Arduino on PlatformIO",
+    "transport": "native USB composite CDC and HID mouse",
+    "current_device_policy": "Do not flash or alter the StickS3 currently in use; all device tests wait for the fresh unit."
+  },
+  "validated_facts": [
+    {
+      "fact": "The internal IMU is a BMI270 at I2C address 0x68 on SDA GPIO47 and SCL GPIO48.",
+      "validation": "M5Stack StickS3 documentation and M5Unified StickS3 board implementation"
+    },
+    {
+      "fact": "The internal infrared transmitter is GPIO46 and the infrared receiver is GPIO42.",
+      "validation": "M5Stack StickS3 documentation"
+    },
+    {
+      "fact": "The infrared receiver is a demodulating digital receiver intended for RMT pulse capture, not an analog reflectance channel.",
+      "validation": "M5Stack documents RMT-only reception and its remote-control distance guidance; this makes blink sensing unproven until measured."
+    },
+    {
+      "fact": "The internal IR path needs the controlled external 5 V output and must not be enabled while an external source drives that rail.",
+      "validation": "M5Stack StickS3 power and IR documentation; firmware defaults the rail off and requires a physical two-second hold."
+    },
+    {
+      "fact": "USB HID on ESP32-S3 requires TinyUSB native mode ARDUINO_USB_MODE=0; ARDUINO_USB_MODE=1 selects hardware USB-JTAG CDC and cannot run USBHIDMouse.",
+      "validation": "Espressif Arduino core 2.0.17 and 3.x USB examples, installed core sources, and Context7 official-source excerpts"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "name": "Separate StickS3 target",
+      "status": "implemented",
+      "acceptance": [
+        "Legacy AVR source remains untouched.",
+        "StickS3 has its own pinned PlatformIO environment.",
+        "A native host-test environment compiles sensor-independent logic."
+      ]
+    },
+    {
+      "id": "T2",
+      "name": "Safe USB head-mouse prototype",
+      "status": "implemented_pending_hardware",
+      "acceptance": [
+        "BMI270 data calibrates only while stationary.",
+        "Movement uses gyro rate with filtering, deadzone, fractional accumulation, and bounded HID reports.",
+        "The device emits no pointer movement until mouse mode is physically armed for two seconds.",
+        "Axis directions are verified and adjusted on the glasses mount before user testing."
+      ]
+    },
+    {
+      "id": "T3",
+      "name": "Onboard IR blink feasibility probe",
+      "status": "implemented_pending_hardware",
+      "acceptance": [
+        "Transmit GPIO46 emits a controlled 38 kHz carrier envelope through RMT.",
+        "Receive GPIO42 captures raw demodulated pulse timing through RMT.",
+        "CDC logs retain timestamp, validity, symbol count, active time, total time, normalized ratio, and protocol stage.",
+        "The guided test measures open eye, closed eye, and repeated blinks without assuming signal polarity.",
+        "A pass requires at least 20 valid frames in each baseline, at least 4 sigma separation, at least 15 percent relative change, and at least two human-duration blink events."
+      ]
+    },
+    {
+      "id": "T4",
+      "name": "External click-sensor boundary",
+      "status": "implemented_interface_only",
+      "acceptance": [
+        "Blink classification consumes a sensor-neutral normalized sample.",
+        "A future analog TCRT5000 implementation can replace the onboard IR producer without changing USB click behavior.",
+        "No TCRT5000 purchase is recommended before the onboard test gate is evaluated."
+      ]
+    },
+    {
+      "id": "T5",
+      "name": "Fresh-device bench validation",
+      "status": "blocked_until_fresh_device_arrives",
+      "acceptance": [
+        "Firmware build completes without flashing as the pre-hardware gate.",
+        "Fresh StickS3 enumerates as both CDC and HID without spontaneous mouse reports.",
+        "Display reports BMI270 and stationary calibration succeeds.",
+        "IR test is repeated at the intended eye distance and geometry in at least two ambient-light conditions.",
+        "Five deliberate blinks are attempted per run and raw CSV is retained."
+      ]
+    }
+  ],
+  "sensor_purchase_decision": {
+    "onboard_ir_pass": "Keep the integrated IR path only if two repeat runs pass and at least four of five deliberate blinks are detected in each run with no false click during a 30-second open-eye control.",
+    "inconclusive_retest": "Reposition and repeat when valid frames are below 80 percent or geometry changed during capture.",
+    "external_sensor_required": "Use an external analog reflectance sensor such as TCRT5000 when open/closed separation remains below the gate, deliberate-blink recall is below four of five after positioning trials, or false clicks appear in the open-eye control."
+  },
+  "remaining_hardware_questions": [
+    "Which StickS3 gyro axes and signs correspond to horizontal and vertical cursor motion in the final glasses mount?",
+    "Does the fixed physical spacing and optical orientation of the integrated IR pair return enough modulated reflection from an eyelid at the intended distance?",
+    "Does direct transmitter-to-receiver optical coupling saturate the digital receiver and erase the open-versus-closed difference?",
+    "What mounting position provides repeatable blink sensing without putting the StickS3 body in the user's field of view?"
+  ]
+}
