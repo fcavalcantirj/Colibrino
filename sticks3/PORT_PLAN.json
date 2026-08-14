@@ -27,6 +27,10 @@
     {
       "fact": "USB HID on ESP32-S3 requires TinyUSB native mode ARDUINO_USB_MODE=0; ARDUINO_USB_MODE=1 selects hardware USB-JTAG CDC and cannot run USBHIDMouse.",
       "validation": "Espressif Arduino core 2.0.17 and 3.x USB examples, installed core sources, and Context7 official-source excerpts"
+    },
+    {
+      "fact": "Wokwi can execute a generic ESP32-S3 DevKitC firmware image, but its documented board list does not provide a complete StickS3 model.",
+      "validation": "Official Wokwi ESP32 guide, Wokwi CLI documentation, Context7 Wokwi documentation index, and a successful Wokwi CLI run of the cross-compiled simulator harness"
     }
   ],
   "tasks": [
@@ -84,8 +88,23 @@
         "IR test is repeated at the intended eye distance and geometry in at least two ambient-light conditions.",
         "Five deliberate blinks are attempted per run and raw CSV is retained."
       ]
+    },
+    {
+      "id": "T6",
+      "name": "Generic ESP32-S3 simulator gate",
+      "status": "implemented_and_validated",
+      "acceptance": [
+        "The portable production motion and blink-analysis sources cross-compile for a generic ESP32-S3 target.",
+        "Wokwi CLI lints the diagram and boots the firmware image.",
+        "The simulated firmware validates stationary gyro calibration, moving-calibration rejection, cursor deadzone, pointer direction and accumulation, invalid timestep rejection, optical separation, blink timing and refractory behavior, and the complete guided feasibility protocol.",
+        "The run emits COLIBRINO_SIM_PASS and does not claim to validate unmodeled StickS3 peripherals or optics."
+      ]
     }
   ],
+  "simulation_boundary": {
+    "validated_in_wokwi": "ESP32-S3 compilation and execution of sensor-independent motion, statistics, blink detection, and feasibility state-machine logic.",
+    "requires_sticks3_hardware": "BMI270 initialization and axis orientation, M5PM1 power control, display, buttons, internal IR electrical and optical behavior, composite TinyUSB CDC/HID enumeration, and end-to-end cursor/click behavior."
+  },
   "sensor_purchase_decision": {
     "onboard_ir_pass": "Keep the integrated IR path only if two repeat runs pass and at least four of five deliberate blinks are detected in each run with no false click during a 30-second open-eye control.",
     "inconclusive_retest": "Reposition and repeat when valid frames are below 80 percent or geometry changed during capture.",

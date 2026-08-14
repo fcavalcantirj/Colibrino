@@ -32,11 +32,15 @@ Run commands from `sticks3/`.
 ```sh
 platformio test -e native
 platformio run -e m5stack-sticks3
+./scripts/run_wokwi.sh
 ```
 
 The first command must pass all portable motion and blink-analysis tests. The
-second command compiles firmware but does not upload it. Do not treat a clean
-build as hardware validation.
+second command compiles firmware but does not upload it. The third cross-builds
+the portable production logic for a generic ESP32-S3, lints the Wokwi diagram,
+and requires `COLIBRINO_SIM_PASS` from a cloud simulation. It loads
+`WOKWI_CLI_TOKEN` from the ignored repository `.env` when present. Do not treat
+either build or simulator success as StickS3 hardware validation.
 
 If PlatformIO is installed in its managed environment on this workstation, the
 equivalent executable is:
@@ -46,6 +50,12 @@ equivalent executable is:
 ```
 
 Generated `.pio/` contents are ignored and must not be committed.
+
+Wokwi does not model the complete StickS3. Its generic ESP32-S3 gate covers the
+portable gyro calibration, pointer mapping, blink detector, and guided protocol.
+It does not cover BMI270 I2C, M5PM1 power, onboard IR optics, the display,
+buttons, or composite TinyUSB behavior. Preserve this boundary in documentation
+and acceptance claims.
 
 ## Hardware safety
 
@@ -106,5 +116,6 @@ Do not commit generated firmware, local PlatformIO state, credentials, serial
 logs containing unrelated user data, or editor files.
 
 Before handing off a StickS3 code change, run the native tests, compile the
-firmware without upload, validate `PORT_PLAN.json`, and report clearly which
-claims remain hardware-dependent.
+firmware without upload, run the Wokwi gate when the portable logic changes,
+validate `PORT_PLAN.json`, and report clearly which claims remain
+hardware-dependent.

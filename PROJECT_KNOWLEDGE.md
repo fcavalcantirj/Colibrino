@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-14T23:14:25Z — HEAD 4790d38
+
+Added and executed a reproducible Wokwi CLI gate for the committed StickS3 branch. A generic ESP32-S3 image now runs the production portable motion and blink-analysis sources, eight deterministic checks pass in Wokwi, the local simulator token is kept in an ignored repository `.env`, and documentation now distinguishes simulated logic from the BMI270, M5PM1, IR optics, display, button, and TinyUSB behavior that still requires the fresh StickS3.
+
 ## 2026-08-14T22:21:27Z — HEAD 870cf23
 
 Added the uncommitted `sticks3/` prototype implemented in this session: its pinned build, guarded native USB HID, BMI270 motion path, sensor-neutral blink boundary, RMT onboard-IR experiment, guided feasibility gates, host tests, safety defaults, successful no-upload build, and remaining fresh-device validation work. Corrected the earlier USB-mode and onboard-IR assumptions using the exact bundled framework APIs and M5Stack controller documentation.
@@ -14,7 +18,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The analyzed commit is `870cf2333915872fd3dc88d5c980a3c63dc375c8` on local branch `master`. Local `master`, `origin/master`, and upstream `tix-life/Colibrino` all resolve to this commit. The worktree was clean before this knowledge file was created.
+The analyzed commit is `4790d3887b1338f9a46becf0d786a44ae103628d` on local branch `agent/sticks3-port`, matching `origin/agent/sticks3-port` before the simulator follow-up changes. Local and remote `master` remain at upstream-derived commit `870cf2333915872fd3dc88d5c980a3c63dc375c8`.
 
 ### Repository lineage
 
@@ -38,7 +42,7 @@ The README explicitly targets people with physical and motor disabilities includ
 
 The active target is an Arduino Leonardo or ATmega32U4 Pro Micro connected to a computer over USB. The microcontroller runs continuously as a USB HID mouse; there is no server, desktop application, worker, cron job, or cloud component.
 
-An uncommitted successor prototype now exists under `sticks3/` for the M5Stack StickS3. It is also a standalone wired USB HID mouse, with composite USB CDC for diagnostic CSV output. It deliberately starts with IR power off and mouse movement locked, and it has not been flashed to hardware.
+A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is also a standalone wired USB HID mouse, with composite USB CDC for diagnostic CSV output. It deliberately starts with IR power off and mouse movement locked, and it has not been flashed to hardware.
 
 ### Physical assembly
 
@@ -166,13 +170,17 @@ An Arduino CLI build was attempted on 2026-08-14 with FQBN `arduino:avr:leonardo
 
 The legacy target has no unit tests, hardware-in-the-loop tests, static-analysis configuration, GitHub Actions workflows, or other CI. The StickS3 prototype adds eight native Unity test cases for stationary gyro calibration, motion rejection, pointer deadzone and accumulation, optical-signal separation, blink timing, and the guided protocol. All eight passed locally. No hardware-in-the-loop or CI job exists yet.
 
+The StickS3 tree also has a Wokwi CLI gate using the generic `board-esp32-s3-devkitc-1` model. It cross-compiles the production `motion_controller.cpp` and `signal_analysis.cpp` sources and runs eight deterministic firmware-side checks covering stationary calibration, motion rejection, deadzone behavior, pointer direction and accumulation, invalid timing, signal separation, blink duration and refractory timing, and the complete feasibility protocol. The 2026-08-14 run passed and printed `COLIBRINO_SIM_PASS`. Assumption: Wokwi's generic ESP32-S3 CPU and Arduino execution are representative for the portable logic only; they are not evidence for StickS3 peripherals.
+
 The StickS3 firmware compiled successfully without upload using PlatformIO `espressif32@6.12.0`, Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The final composite CDC and HID image used 35,064 bytes of reported RAM and 575,733 bytes of the application flash partition. Hardware behavior remains unverified until the fresh StickS3 arrives.
 
 # Configuration
 
 ### Runtime configuration model
 
-There are no environment variables, flags, secrets, configuration files, databases, or runtime settings. Behavior is controlled by source constants and requires recompilation to change.
+The legacy firmware has no environment variables, flags, secrets, configuration files, databases, or runtime settings. Behavior is controlled by source constants and requires recompilation to change.
+
+The optional Wokwi gate requires `WOKWI_CLI_TOKEN`. `sticks3/scripts/run_wokwi.sh` loads it from the process environment or the repository-root `.env`, which is ignored by Git. `PLATFORMIO_CLI_BIN` and `WOKWI_CLI_BIN` can point the wrapper at CLIs that are not on `PATH`. These values affect development tooling only and are not compiled into device firmware.
 
 ### Motion constants
 
@@ -223,6 +231,8 @@ USB serial starts at 115200. Once a valid EEPROM marker exists, the calibration 
 ### External services
 
 The active firmware makes no network requests, uses no Wi-Fi or Bluetooth, writes no filesystem, calls no external API, and has no database, messaging, telemetry, payment, or cloud side effect.
+
+Development-only Wokwi validation sends the compiled generic ESP32-S3 image to Wokwi's simulation API and receives its serial output. It requires the local `WOKWI_CLI_TOKEN`; the token and generated firmware stay untracked.
 
 # Risks and constraints
 
@@ -314,7 +324,7 @@ Across history, `README.md` is the most frequently changed current file with 23 
 
 ### Branch layout
 
-Upstream retains `master`, `brunoo`, `dwellClick`, `henrique`, `polly`, and `tcrt5000`. Every non-master branch tip is already an ancestor of `master`; they are historical topic branches, not pending work. The local checkout tracks only `origin/master`.
+Upstream retains `master`, `brunoo`, `dwellClick`, `henrique`, `polly`, and `tcrt5000`. Every upstream non-master branch tip is already an ancestor of `master`; they are historical topic branches, not pending work. The local checkout is now on `agent/sticks3-port`, tracking `origin/agent/sticks3-port`; local `master` remains aligned with `origin/master`.
 
 ### GitHub issue state
 

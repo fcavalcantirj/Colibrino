@@ -19,6 +19,29 @@ Neither command uploads firmware. Do not connect or flash the StickS3 that is
 currently in use. The upload step is deliberately deferred until the fresh
 device arrives.
 
+## ESP32-S3 simulator gate
+
+Wokwi does not model the complete StickS3 board. The simulator target therefore
+uses its generic ESP32-S3 DevKitC model to execute the same portable gyro
+calibration, pointer mapping, signal separation, blink timing, and guided
+feasibility-protocol code used by the StickS3 firmware. It is a real
+cross-compiled ESP32-S3 run, not a replacement for the fresh-device test.
+
+Install the Wokwi CLI, put the token in the repository's ignored `.env`, and run:
+
+```sh
+WOKWI_CLI_TOKEN=your_token_here
+./scripts/run_wokwi.sh
+```
+
+The script also accepts `PLATFORMIO_CLI_BIN` and `WOKWI_CLI_BIN` when either CLI
+is not on `PATH`. A passing run must print `COLIBRINO_SIM_PASS`; any failed check
+prints `COLIBRINO_SIM_FAIL` and fails the CLI run.
+
+This gate does not validate the StickS3 BMI270/I2C wiring, M5PM1-controlled 5 V
+rail, display, onboard IR optics/receiver, native USB HID enumeration, or button
+electrical behavior. Those remain hardware-only acceptance gates.
+
 After the fresh-device upload, capture diagnostics with:
 
 ```sh
