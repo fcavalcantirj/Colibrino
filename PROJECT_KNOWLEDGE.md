@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-15T16:20:19Z — HEAD 59ffaab
+
+Distinguished the tested Colibrino StickS3 from the separate live `bedside-countdown-s3`, recovered the tested unit's original `sticks3-ptt` authenticated ArduinoOTA workflow, and carried that capability into Colibrino behind ignored credentials. Added fail-closed OTA callbacks, a hostname plus saved-MAC upload guard, documentation and structured acceptance criteria, then passed all twelve native tests and the OTA-enabled production build while confirming the local simulator artifact contains no Wi-Fi or OTA credential strings. The installed older Colibrino image still needs one cable bootstrap before later updates can use OTA.
+
 ## 2026-08-15T03:12:46Z — HEAD 4c640d2
 
 Physically validated StickS3 native USB CDC plus HID, BMI270 calibration, safe pointer arming, stationary suppression, and worn-head cursor motion. Recorded that the onboard demodulating IR pair is unsuitable for near-eye reflectance, added a conservative current-boot four-blink IMU classifier and guided validation workflow, replayed two 200 Hz physical captures without still or head-motion false sequences, expanded native and Wokwi coverage, and deferred any TCRT5000 purchase until one repeat mounted test proves or rejects the IMU click path.
@@ -30,7 +34,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The last fully analyzed source commit is `4c640d2da54783fb48cbc25670dc9b1710a07827`. It contains the physically exercised StickS3 firmware, conservative IMU blink classifier, capture replay tool, expanded native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
+The last fully analyzed source commit is `59ffaab1b19d283f3859c4695dcc2b389f9d8763`. It contains the physically exercised StickS3 firmware, conservative IMU blink classifier, authenticated OTA preservation, MAC-guarded uploader, capture replay tool, native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
 
 ### Repository lineage
 
@@ -54,7 +58,7 @@ The README explicitly targets people with physical and motor disabilities includ
 
 The active target is an Arduino Leonardo or ATmega32U4 Pro Micro connected to a computer over USB. The microcontroller runs continuously as a USB HID mouse; there is no server, desktop application, worker, cron job, or cloud component.
 
-A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is also a standalone wired USB HID mouse, with composite USB CDC for commands and diagnostic CSV output. Physical testing confirmed enumeration, BMI270 calibration, fail-closed arming, stationary suppression, and head-controlled cursor motion. It starts with movement locked and requires the large blue Button A to advance guided tests or arm the pointer. Blink clicks remain disabled unless the current boot passes its guided IMU validation. The tested device is powered off and disconnected after the session; it still holds the earlier safe test image whose validation failed closed rather than the latest four-blink build.
+A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is a standalone wired USB HID mouse with composite USB CDC for commands and diagnostic CSV, plus optional authenticated Wi-Fi OTA when an ignored device header is present. Physical testing confirmed USB enumeration, BMI270 calibration, fail-closed arming, stationary suppression, and head-controlled cursor motion. It starts with movement locked and requires the large blue Button A to advance guided tests or arm the pointer. Blink clicks remain disabled unless the current boot passes its guided IMU validation. The tested device currently holds the earlier safe test image whose validation failed closed rather than the latest four-blink and OTA build; because that installed image lacks an OTA listener, one cable bootstrap remains unavoidable.
 
 The user firmware present before Colibrino testing was captured as an ignored 8 MB flash image at `sticks3/.device-backups/sticks3-ac276ed268b8-pre-colibrino-20260815T014627Z.bin`. Its SHA-256 is `712cd6797ff0b77bfda8674b0aaaee93bc187cc64000fc8c0135374f8e031f65`. Preserve this backup and restore it after the remaining hardware experiment when the user requests their working project back.
 
@@ -106,9 +110,9 @@ The non-code assets are two documentation images, three enclosure STL files, the
 
 ### StickS3 successor tree
 
-`sticks3/src/main.cpp` is the physical-device application. It initializes M5Unified, composite TinyUSB CDC plus HID, power, BMI270 motion, display state, buttons, optical diagnostics, guided IMU capture, and fail-closed HID output. `motion_controller.cpp` contains portable calibration and pointer mapping. `signal_analysis.cpp` and `ir_blink_input.cpp` implement the retained optical experiment. `imu_blink_detector.cpp` implements the conservative four-impulse classifier. Headers under `sticks3/include/colibrino/` define the portable boundaries.
+`sticks3/src/main.cpp` is the physical-device application. It initializes M5Unified, composite TinyUSB CDC plus HID, optional Wi-Fi plus ArduinoOTA, power, BMI270 motion, display state, buttons, optical diagnostics, guided IMU capture, and fail-closed HID output. `motion_controller.cpp` contains portable calibration and pointer mapping. `signal_analysis.cpp` and `ir_blink_input.cpp` implement the retained optical experiment. `imu_blink_detector.cpp` implements the conservative four-impulse classifier. Headers under `sticks3/include/colibrino/` define the portable boundaries.
 
-`sticks3/src/sim_main.cpp` is a generic ESP32-S3 Wokwi gate rather than a second product entry point. Native Unity tests live under `sticks3/test/`. `sticks3/tools/replay_imu_capture.cpp` replays physical CDC logs through the exact production detector. `sticks3/scripts/run_wokwi.sh` builds and launches the simulator, while `PORT_PLAN.json` is the structured evidence and decision record.
+`sticks3/src/sim_main.cpp` is a generic ESP32-S3 Wokwi gate rather than a second product entry point. Native Unity tests live under `sticks3/test/`. `sticks3/tools/replay_imu_capture.cpp` replays physical CDC logs through the exact production detector. `sticks3/scripts/run_wokwi.sh` builds and launches the simulator. `sticks3/scripts/upload_ota.sh` builds locally, resolves only the configured Stick hostname, verifies the resolved ARP MAC, and invokes Espressif's authenticated updater. `PORT_PLAN.json` is the structured evidence and decision record.
 
 # Execution flow
 
@@ -166,9 +170,11 @@ There is no shutdown or cleanup path. The device continues sampling sensors and 
 
 ### StickS3 execution flow
 
-The successor starts composite USB and M5Unified, disables unsafe or unproven output, initializes the BMI270, and performs per-boot stationary bias calibration. The display and CDC report the current state. Button A advances the optical or IMU guided workflows and physically arms or locks mouse mode; pointer reports cannot escape the calibration and arming gates.
+The successor starts composite USB and M5Unified, disables unsafe or unproven output, initializes the BMI270, and performs per-boot stationary bias calibration. When ignored credentials are compiled in, it also begins a non-blocking Wi-Fi join and advertises authenticated ArduinoOTA as `sticks3-ptt.local` after connection. The display and CDC report the current state. Button A advances the optical or IMU guided workflows and physically arms or locks mouse mode; pointer reports cannot escape the calibration and arming gates.
 
 The IMU workflow first records a still and normal-blinking control, then deliberate four-blink groups, then normal head movement. Each stage feeds `ImuBlinkDetector`, counts completed sequences, and logs high-rate CSV. The result is valid only when the current boot has zero still sequences, at least two deliberate sequences, and zero head-motion sequences. Runtime clicks are allowed only after that result and while the pointer is armed. Power loss clears calibration and blink validation, returning the next boot to a locked state.
+
+An incoming OTA update first locks HID, releases all mouse buttons, resets motion and both IMU detectors, invalidates current-boot blink validation, cancels guided capture, and forces external 5 V off. The display then owns progress feedback while `ArduinoOTA.handle()` processes the transfer. A failed transfer leaves mouse output locked; a successful transfer reboots into a fresh locked state.
 
 # Dependencies and build
 
@@ -198,7 +204,7 @@ The legacy target has no unit tests, hardware-in-the-loop tests, static-analysis
 
 The StickS3 tree also has a Wokwi CLI gate using the generic `board-esp32-s3-devkitc-1` model. It cross-compiles the production motion, optical analysis, and IMU blink-classifier sources and runs ten deterministic firmware-side checks. The original eight motion and optical checks remain, and two checks cover a valid four-impulse IMU rhythm plus rejection of short and motion-contaminated sequences. The 2026-08-15 run passed and printed `COLIBRINO_SIM_PASS`. Assumption: Wokwi's generic ESP32-S3 CPU and Arduino execution are representative for portable logic only; they are not evidence for StickS3 peripherals or near-eye sensing.
 
-The StickS3 firmware compiled successfully after the final safety changes using PlatformIO `espressif32@6.12.0`, Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The composite CDC and HID image used 35,336 bytes of reported RAM and 578,949 bytes of the application flash partition. A physical StickS3 verified USB enumeration, BMI270 input, controls, and HID motion. Blink-click validation remains deliberately gated and unproven.
+The StickS3 firmware compiled successfully after the OTA safety changes using PlatformIO `espressif32@6.12.0`, Arduino-ESP32 2.0.17, M5Unified 0.2.19, M5GFX 0.2.26, and the core-bundled WiFi, ESPmDNS, Update, and ArduinoOTA libraries. With the ignored local OTA configuration present, the composite CDC, HID, and OTA image used 65,172 bytes of reported RAM and 1,048,377 bytes of the application flash partition. All twelve native tests passed. The credential-free generic Wokwi image built locally and contained none of the configured Wi-Fi SSID, Wi-Fi password, or OTA password strings. The external Wokwi run was not repeated after this app-layer-only change to avoid sending a credential-bearing production artifact; the ten-check portable logic result from earlier the same day remains applicable because no portable source changed.
 
 # Configuration
 
@@ -207,6 +213,10 @@ The StickS3 firmware compiled successfully after the final safety changes using 
 The legacy firmware has no environment variables, flags, secrets, configuration files, databases, or runtime settings. Behavior is controlled by source constants and requires recompilation to change.
 
 The optional Wokwi gate requires `WOKWI_CLI_TOKEN`. `sticks3/scripts/run_wokwi.sh` loads it from the process environment or the repository-root `.env`, which is ignored by Git. `PLATFORMIO_CLI_BIN` and `WOKWI_CLI_BIN` can point the wrapper at CLIs that are not on `PATH`. These values affect development tooling only and are not compiled into device firmware.
+
+StickS3 OTA is optional at compile time. An ignored `sticks3/include/colibrino_secrets.h` must define `WIFI_SSID`, `WIFI_PASS`, and `OTA_PASS`; the committed `.example` contains placeholders only. On this workstation the ignored header reuses the same physical unit's original PTT secrets without copying them into this repository. The ignored root `.env` sets `COLIBRINO_OTA_SECRETS`, `COLIBRINO_OTA_HOST`, and `COLIBRINO_OTA_EXPECTED_MAC` for the uploader. Never print, stage, send to simulation, or commit these values.
+
+The tested unit's OTA hostname is `sticks3-ptt.local` and its required saved MAC is `AC:27:6E:D2:68:B8`. The separate live bedside device advertises `bedside-countdown-s3.local`, identifies as a LilyGO T-Display-S3, and was observed at a different MAC. The uploader must refuse that device even if a caller supplies its hostname.
 
 ### Motion constants
 
@@ -260,7 +270,9 @@ The StickS3 composite CDC interface accepts text commands and emits status plus 
 
 ### External services
 
-The active firmware makes no network requests, uses no Wi-Fi or Bluetooth, writes no filesystem, calls no external API, and has no database, messaging, telemetry, payment, or cloud side effect.
+The legacy firmware makes no network requests, uses no Wi-Fi or Bluetooth, writes no filesystem, calls no external API, and has no database, messaging, telemetry, payment, or cloud side effect.
+
+An OTA-configured StickS3 joins the configured local Wi-Fi network, advertises `_arduino._tcp` through mDNS as `sticks3-ptt.local`, and listens for authenticated update requests on UDP port 3232. Firmware transfer writes the inactive application partition and reboots only after a verified complete image. It performs no cloud call, telemetry, database, payment, or external messaging. OTA is a material persistent write and can replace the whole running application, so hostname plus hardware-MAC verification is mandatory before upload.
 
 Development-only Wokwi validation sends the compiled generic ESP32-S3 image to Wokwi's simulation API and receives its serial output. It requires the local `WOKWI_CLI_TOKEN`; the token and generated firmware stay untracked.
 
@@ -346,6 +358,10 @@ The four-blink IMU path is tuned from only two sessions with one user, one devic
 
 The integrated IR components are intended for remote-control distances and M5Stack warns that too-close placement produces abnormal reception. No reviewed device documentation provides radiant-intensity or near-eye exposure limits. Do not continue eye-facing experiments with the onboard emitter. An external TCRT5000 design must independently limit emitter current, verify voltage compatibility, and establish a safe mechanical distance before any worn test.
 
+### OTA security and recovery
+
+ArduinoOTA authentication prevents an unauthenticated LAN caller from installing an image, but the protocol is not a TLS deployment channel and the compiled device image necessarily contains network configuration. Keep OTA on a trusted local network, use the existing non-default password, never upload the production artifact to Wokwi or another third party, and preserve USB plus the full flash backup as recovery paths. The uploader's ARP MAC check prevents the known bedside S3 from being overwritten but does not replace physical identity checks when provisioning a new board.
+
 # Git history and tracker context
 
 ### Development arc
@@ -417,6 +433,10 @@ The official page warns that external 5 V can be input or output and defaults to
 ### StickS3 Bluetooth option
 
 Assumption: a wireless StickS3 variant is also feasible as Bluetooth Low Energy HID. ESP32-S3 supports Bluetooth LE but not Bluetooth Classic. A BLE port needs pairing, reconnect, disconnected-state motion suppression, battery and sleep policy, host compatibility tests, and an explicit choice between wired USB HID, BLE HID, or a build that offers both without ambiguous state.
+
+### StickS3 OTA lineage
+
+The tested StickS3's original working project is the separate `devices/m5sticks3/ptt` firmware under the local `home-automations` repository. That project already uses authenticated ArduinoOTA, `sticks3-ptt.local`, and an ignored `secrets.h`; its build wrapper supports `./build.sh ota` while the device is awake. This is distinct from the live `bedside-countdown-s3` project on a LilyGO T-Display-S3. Colibrino intentionally preserves the PTT device's existing OTA identity so future agents can use the established workflow after the one-time bootstrap.
 
 ### Generic ESP32 distinction
 
@@ -495,6 +515,10 @@ The replay evidence proves conservative separation for the recorded controls, no
 ### Device restoration
 
 The original 8 MB device image is backed up and ignored correctly, but has not been restored because one final hardware validation remains. After that experiment, restore the captured image and verify normal boot before returning the user's working StickS3 project. The exact application-level acceptance signal after restoration is user-specific and remains to be confirmed at that time.
+
+### OTA bootstrap and round trip
+
+The OTA-enabled Colibrino image has compiled but has not run on hardware. The installed older Colibrino test image does not join Wi-Fi or advertise ArduinoOTA, so being powered on is not equivalent to being network-reachable. One USB flash must bootstrap the new listener. Before relying on it, verify that the correct MAC advertises `sticks3-ptt.local`, complete two authenticated OTA round trips, confirm every update locks HID and external power, and check that Wi-Fi background activity does not degrade BMI270 motion timing or stationary suppression.
 
 ### Transport priority
 
