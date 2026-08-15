@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-15T03:12:46Z — HEAD 4c640d2
+
+Physically validated StickS3 native USB CDC plus HID, BMI270 calibration, safe pointer arming, stationary suppression, and worn-head cursor motion. Recorded that the onboard demodulating IR pair is unsuitable for near-eye reflectance, added a conservative current-boot four-blink IMU classifier and guided validation workflow, replayed two 200 Hz physical captures without still or head-motion false sequences, expanded native and Wokwi coverage, and deferred any TCRT5000 purchase until one repeat mounted test proves or rejects the IMU click path.
+
 ## 2026-08-14T23:30:44Z — HEAD 8d91076
 
 Fast-forwarded the fully validated `agent/sticks3-port` history into local and remote `master`. Both branches now contain the guarded StickS3 firmware, Wokwi gate, complete README set, source annotations, agent instructions, and hardware acceptance plan; the working tree is clean apart from ignored local credentials and PlatformIO output.
@@ -26,7 +30,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The last fully analyzed source commit is `8d91076c19f166d7b7be51fb7a1132c56ec13f53`. It is the fast-forward merge point and retained `agent/sticks3-port` tip, containing the guarded StickS3 prototype, Wokwi gate, complete documentation, and source annotations. `master` contains that revision plus this knowledge-only merge-state record; no firmware behavior changed afterward.
+The last fully analyzed source commit is `4c640d2da54783fb48cbc25670dc9b1710a07827`. It contains the physically exercised StickS3 firmware, conservative IMU blink classifier, capture replay tool, expanded native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
 
 ### Repository lineage
 
@@ -34,7 +38,7 @@ The configured origin is the public fork `fcavalcantirj/Colibrino`. GitHub ident
 
 ### Activity and maturity
 
-Before the successor work in this session, the latest upstream firmware-affecting commit was from January 2023 and the latest upstream repository commit was a README update from 2025-01-29. The upstream repository was not archived as of this capture, but it had no current CI, release tags, open pull requests, or recent firmware work. Treat the AVR implementation as an old hardware prototype; the new StickS3 path resumed local development in August 2026 but remains pre-hardware-validation.
+Before the successor work in this session, the latest upstream firmware-affecting commit was from January 2023 and the latest upstream repository commit was a README update from 2025-01-29. The upstream repository was not archived as of this capture, but it had no current CI, release tags, open pull requests, or recent firmware work. Treat the AVR implementation as an old hardware prototype. The new StickS3 path resumed local development in August 2026; USB, IMU, motion, controls, and safety interlocks now have physical evidence, while wearable blink-click validation remains incomplete.
 
 # Runtime
 
@@ -50,7 +54,9 @@ The README explicitly targets people with physical and motor disabilities includ
 
 The active target is an Arduino Leonardo or ATmega32U4 Pro Micro connected to a computer over USB. The microcontroller runs continuously as a USB HID mouse; there is no server, desktop application, worker, cron job, or cloud component.
 
-A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is also a standalone wired USB HID mouse, with composite USB CDC for diagnostic CSV output. It deliberately starts with IR power off and mouse movement locked, and it has not been flashed to hardware.
+A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is also a standalone wired USB HID mouse, with composite USB CDC for commands and diagnostic CSV output. Physical testing confirmed enumeration, BMI270 calibration, fail-closed arming, stationary suppression, and head-controlled cursor motion. It starts with movement locked and requires the large blue Button A to advance guided tests or arm the pointer. Blink clicks remain disabled unless the current boot passes its guided IMU validation. The tested device is powered off and disconnected after the session; it still holds the earlier safe test image whose validation failed closed rather than the latest four-blink build.
+
+The user firmware present before Colibrino testing was captured as an ignored 8 MB flash image at `sticks3/.device-backups/sticks3-ac276ed268b8-pre-colibrino-20260815T014627Z.bin`. Its SHA-256 is `712cd6797ff0b77bfda8674b0aaaee93bc187cc64000fc8c0135374f8e031f65`. Preserve this backup and restore it after the remaining hardware experiment when the user requests their working project back.
 
 ### Physical assembly
 
@@ -97,6 +103,12 @@ The repository includes the GNU GPL version 3 license text. The README and prima
 ### Repository assets
 
 The non-code assets are two documentation images, three enclosure STL files, the README, and the license. There are no schematics in an editable electronics-CAD format, board definition files, test fixtures, or generated firmware binaries.
+
+### StickS3 successor tree
+
+`sticks3/src/main.cpp` is the physical-device application. It initializes M5Unified, composite TinyUSB CDC plus HID, power, BMI270 motion, display state, buttons, optical diagnostics, guided IMU capture, and fail-closed HID output. `motion_controller.cpp` contains portable calibration and pointer mapping. `signal_analysis.cpp` and `ir_blink_input.cpp` implement the retained optical experiment. `imu_blink_detector.cpp` implements the conservative four-impulse classifier. Headers under `sticks3/include/colibrino/` define the portable boundaries.
+
+`sticks3/src/sim_main.cpp` is a generic ESP32-S3 Wokwi gate rather than a second product entry point. Native Unity tests live under `sticks3/test/`. `sticks3/tools/replay_imu_capture.cpp` replays physical CDC logs through the exact production detector. `sticks3/scripts/run_wokwi.sh` builds and launches the simulator, while `PORT_PLAN.json` is the structured evidence and decision record.
 
 # Execution flow
 
@@ -152,6 +164,12 @@ The active blink state machine calls `Mouse.press()` at the detected start and `
 
 There is no shutdown or cleanup path. The device continues sampling sensors and emitting HID reports until reset, power loss, or USB disconnection. Gyro offsets persist across resets in EEPROM.
 
+### StickS3 execution flow
+
+The successor starts composite USB and M5Unified, disables unsafe or unproven output, initializes the BMI270, and performs per-boot stationary bias calibration. The display and CDC report the current state. Button A advances the optical or IMU guided workflows and physically arms or locks mouse mode; pointer reports cannot escape the calibration and arming gates.
+
+The IMU workflow first records a still and normal-blinking control, then deliberate four-blink groups, then normal head movement. Each stage feeds `ImuBlinkDetector`, counts completed sequences, and logs high-rate CSV. The result is valid only when the current boot has zero still sequences, at least two deliberate sequences, and zero head-motion sequences. Runtime clicks are allowed only after that result and while the pointer is armed. Power loss clears calibration and blink validation, returning the next boot to a locked state.
+
 # Dependencies and build
 
 ### Arduino core APIs
@@ -176,11 +194,11 @@ An Arduino CLI build was attempted on 2026-08-14 with FQBN `arduino:avr:leonardo
 
 ### Automated validation
 
-The legacy target has no unit tests, hardware-in-the-loop tests, static-analysis configuration, GitHub Actions workflows, or other CI. The StickS3 prototype adds eight native Unity test cases for stationary gyro calibration, motion rejection, pointer deadzone and accumulation, optical-signal separation, blink timing, and the guided protocol. All eight passed locally. No hardware-in-the-loop or CI job exists yet.
+The legacy target has no unit tests, hardware-in-the-loop tests, static-analysis configuration, GitHub Actions workflows, or other CI. The StickS3 prototype has twelve native Unity test cases covering stationary gyro calibration, motion rejection, pointer deadzone and accumulation, optical-signal separation, optical blink timing, the guided optical protocol, IMU impulse rejection, head-motion rejection, valid four-impulse rhythm detection, and refractory behavior. All twelve passed locally. No automated hardware-in-the-loop or hosted CI job exists yet.
 
-The StickS3 tree also has a Wokwi CLI gate using the generic `board-esp32-s3-devkitc-1` model. It cross-compiles the production `motion_controller.cpp` and `signal_analysis.cpp` sources and runs eight deterministic firmware-side checks covering stationary calibration, motion rejection, deadzone behavior, pointer direction and accumulation, invalid timing, signal separation, blink duration and refractory timing, and the complete feasibility protocol. The 2026-08-14 run passed and printed `COLIBRINO_SIM_PASS`. Assumption: Wokwi's generic ESP32-S3 CPU and Arduino execution are representative for the portable logic only; they are not evidence for StickS3 peripherals.
+The StickS3 tree also has a Wokwi CLI gate using the generic `board-esp32-s3-devkitc-1` model. It cross-compiles the production motion, optical analysis, and IMU blink-classifier sources and runs ten deterministic firmware-side checks. The original eight motion and optical checks remain, and two checks cover a valid four-impulse IMU rhythm plus rejection of short and motion-contaminated sequences. The 2026-08-15 run passed and printed `COLIBRINO_SIM_PASS`. Assumption: Wokwi's generic ESP32-S3 CPU and Arduino execution are representative for portable logic only; they are not evidence for StickS3 peripherals or near-eye sensing.
 
-The StickS3 firmware compiled successfully without upload using PlatformIO `espressif32@6.12.0`, Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The final composite CDC and HID image used 35,064 bytes of reported RAM and 575,733 bytes of the application flash partition. Hardware behavior remains unverified until the fresh StickS3 arrives.
+The StickS3 firmware compiled successfully after the final safety changes using PlatformIO `espressif32@6.12.0`, Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The composite CDC and HID image used 35,336 bytes of reported RAM and 578,949 bytes of the application flash partition. A physical StickS3 verified USB enumeration, BMI270 input, controls, and HID motion. Blink-click validation remains deliberately gated and unproven.
 
 # Configuration
 
@@ -197,6 +215,8 @@ Movement sensitivity is 30. MPU conversion constants are 16384 counts per g and 
 ### Blink constants
 
 Timer sampling nominally forms one optical pair per millisecond. Raw and averaged windows both contain 50 values. Initialization lasts 100 processed cycles. Rest before detection is 20 ms, baseline reset timeout is 100 ms, and the nominal stuck-blink timeout is 1000 ms.
+
+The StickS3 IMU classifier uses a 1.0 degree-per-second residual enter threshold, 0.6 exit threshold, 2.5 degree-per-second maximum raw head rate, 2000 millisecond initial and post-motion suppression, 20 through 300 millisecond impulse duration, 300 millisecond impulse refractory time, 350 through 1100 millisecond sequence gaps, four impulses per sequence, and a 1500 millisecond click refractory time. Change these only with exact replay of every retained control and intended capture followed by physical validation.
 
 ### Dwell constants
 
@@ -220,7 +240,7 @@ EEPROM address 0 is a one-byte validity marker. Addresses 1 through 12 contain t
 
 The primary external side effect is USB HID mouse movement, wheel movement, and left-button press, release, or click reports. Bugs can therefore move the user's pointer, activate controls, drag content, or leave a button held.
 
-The StickS3 prototype enumerates native USB CDC plus HID at startup but suppresses reports until stationary calibration succeeds, mouse mode is selected, and button A is held for two seconds. Blink-generated clicks remain disabled unless the current boot's IR feasibility session passes; button B can issue an intentional test click while mouse output is armed.
+The StickS3 prototype enumerates native USB CDC plus HID at startup but suppresses reports until stationary calibration succeeds and the user physically arms it through the large blue Button A workflow. M5Unified's hold threshold is set to two seconds so the control has no ambiguous interval at the library's former 500 millisecond default. Stationary armed testing produced zero HID events for more than 30 seconds, while worn-head movement controlled the host pointer. Blink-generated clicks remain disabled unless the current boot's IMU feasibility session passes. There is no separate Button B test-click path.
 
 ### Persistent writes
 
@@ -230,11 +250,13 @@ The main sketch writes 13 EEPROM bytes after an uninitialized calibration. The r
 
 The firmware toggles the infrared emitter at roughly 1 kHz, changes pin 16 for indication and calibration, holds relay pin 9 low, and performs continuous I2C traffic to the MPU. The intended buzzer output is not active.
 
-The StickS3 prototype can enable the M5PM1-controlled external 5 V rail after a two-second button hold, transmit 38.46 kHz carrier bursts on internal GPIO 46, and capture the demodulated receiver on internal GPIO 42. It explicitly disables the speaker amplifier latch because M5Stack states that the amplifier must be off during IR reception. Holding the button again disables the rail. The rail must never be driven simultaneously by an external supply.
+The StickS3 prototype can enable the M5PM1-controlled external 5 V rail, transmit 38.46 kHz carrier bursts on internal GPIO 46, and capture the demodulated receiver on internal GPIO 42 during the retained optical diagnostic. It explicitly disables the speaker amplifier latch because M5Stack states that the amplifier must be off during IR reception. The rail must never be driven simultaneously by an external supply. Physical near-eye trials did not produce separable eye state and this optical path is no longer considered a viable click source.
 
 ### Serial output
 
-USB serial starts at 115200. Once a valid EEPROM marker exists, the calibration function prints the marker value on every calibrated loop. Most other diagnostic printing is commented out.
+The legacy USB serial path starts at 115200. Once a valid EEPROM marker exists, its calibration function prints the marker value on every calibrated loop. Most other legacy diagnostic printing is commented out.
+
+The StickS3 composite CDC interface accepts text commands and emits status plus high-rate IMU CSV during guided capture. Two ignored approximately 200 Hz physical logs are retained under `sticks3/.device-backups/logs/` for exact detector replay. Diagnostic collection writes only to the connected host through CDC; firmware does not persist recordings on the device.
 
 ### External services
 
@@ -316,6 +338,14 @@ Static-analysis finding: the README calls pin 16 a buzzer connection while code 
 
 Assumption: because this device controls a computer for users with limited alternative input, firmware changes should fail closed by releasing buttons and suppressing movement on sensor, calibration, or connection errors. Bench testing should use a non-critical host session and include explicit stuck-button and runaway-cursor tests.
 
+### StickS3 classifier generalization
+
+The four-blink IMU path is tuned from only two sessions with one user, one device, and improvised mounting. It detects head-coupled motion associated with deliberate blinking, not eyelid closure itself. A threshold change that increases intended detections can also admit normal posture corrections, speech, walking, tremor, or cable movement. Never enable it from stored historical success alone; retain current-boot still, deliberate, and head-motion controls and fail closed on any control event.
+
+### StickS3 optical safety and geometry
+
+The integrated IR components are intended for remote-control distances and M5Stack warns that too-close placement produces abnormal reception. No reviewed device documentation provides radiant-intensity or near-eye exposure limits. Do not continue eye-facing experiments with the onboard emitter. An external TCRT5000 design must independently limit emitter current, verify voltage compatibility, and establish a safe mechanical distance before any worn test.
+
 # Git history and tracker context
 
 ### Development arc
@@ -366,17 +396,19 @@ The new `sticks3/platformio.ini` follows the official `espressif32@6.12.0`, `esp
 
 ### StickS3 USB HID feasibility
 
-A wired StickS3 build is source-validated. ESP32-S3 native USB and `USBHIDMouse` compile as a CDC plus relative-mouse composite when `ARDUINO_USB_MODE=0`; mode 1 is hardware USB-JTAG CDC and excludes the HID example path. The prototype builds and links the TinyUSB mouse implementation but enumeration, CDC coexistence, recovery flashing, and report behavior still require the fresh board.
+A wired StickS3 build is source- and hardware-validated for the current prototype. ESP32-S3 native USB and `USBHIDMouse` enumerate as a CDC plus relative-mouse composite when `ARDUINO_USB_MODE=0`; mode 1 is hardware USB-JTAG CDC and excludes the HID example path. Physical testing verified composite enumeration, CDC diagnostics, recovery flashing through the download port, bounded HID reports, stationary suppression, and visible pointer movement from worn-head motion.
 
 ### StickS3 IMU migration
 
-The prototype uses M5Unified timestamped BMI270 gyro values in degrees per second. It estimates bias from at least 50 stationary samples over 2.5 seconds, rejects calibration when any axis exceeds 2 degrees per second standard deviation, applies a low-pass filter and smooth deadzone, accumulates fractional relative movement, and bounds each HID report to 60 pixels. It uses measured IMU timestamps rather than a fixed filter rate. Axis selection and sign remain source constants pending the final glasses-mount test; calibration is intentionally per boot and not persisted yet.
+The prototype uses M5Unified timestamped BMI270 gyro values in degrees per second. It estimates bias from at least 50 stationary samples over 2.5 seconds, rejects calibration when any axis exceeds 2 degrees per second standard deviation, applies a low-pass filter and smooth deadzone, accumulates fractional relative movement, and bounds each HID report to 60 pixels. It uses measured IMU timestamps rather than a fixed filter rate. Physical table and glasses-mounted testing verified stable calibration, zero stationary host events for more than 30 seconds, and useful head-driven pointer movement. Axis selection and sign are still source constants, calibration is intentionally per boot, and remount reproducibility needs another session.
 
 ### StickS3 blink input
 
-The built-in receiver is a digital demodulating remote-control receiver rather than an analog reflectance channel, so it must not be assumed to replace the TCRT5000. The prototype nevertheless performs the requested empirical test: RMT generates eight 500 microsecond carrier bursts separated by 500 microsecond gaps, RMT captures active-low pulse timing, and the normalized active-time ratio feeds a sensor-neutral classifier.
+The built-in receiver is a digital demodulating remote-control receiver rather than an analog reflectance channel and does not replace the TCRT5000. The retained experiment uses RMT carrier bursts on internal GPIO 46 and captures the active-low response on internal GPIO 42, but multiple physical near-eye stages produced malformed or inseparable signal. M5Stack documents transmitter and receiver alignment at no less than 30 centimeters and warns that too-close placement causes abnormal reception. The vendor does not publish enough radiant-intensity or eye-exposure data to justify pointing this emitter at an eye. Treat onboard near-eye IR as rejected, not merely uncalibrated.
 
-The guided session captures open-eye, closed-eye, and repeated-blink stages without assuming polarity. Its firmware gate requires at least 20 valid open and closed frames, at least 4 pooled standard deviations of separation, at least 15 percent relative change, and at least two transitions lasting 40 through 650 milliseconds. The stricter documented purchase gate requires two ambient-light runs, at least four detected blinks from five attempts in each, and no false click during a 30-second open-eye control. Until those tests pass, onboard blink sensing remains unproven and TCRT5000 purchase remains deferred.
+The current alternative detects a deliberately exaggerated four-blink rhythm from bias-corrected BMI270 gyro magnitude rather than claiming ordinary eyelid motion is directly sensed. The production classifier enters an impulse above a 1.0 degree-per-second residual threshold, exits below 0.6, rejects raw head rate above 2.5, suppresses detection during the first two seconds and after head motion, accepts impulses lasting 20 through 300 milliseconds, requires four impulses separated by 350 through 1100 milliseconds, and applies a 1500 millisecond click refractory interval. These constants are conservative safety gates, not a completed usability calibration.
+
+Two ignored approximately 200 Hz physical capture sets contain still, deliberate blinking, and head motion. Exact replay of the production C++ detector found zero sequences in both still controls and both head-motion controls. The first deliberate-blink recording contained three valid four-impulse sequences; the second contained one, below the required two intended sequences for a full validation pass. The current-boot firmware gate therefore requires still equals zero, deliberate blink at least two, and head motion equals zero before it can enable runtime IMU clicks. TCRT5000 purchase remains deferred for one repeat mounted run; inconsistent, tiring, or false-positive four-blink behavior should end this approach and trigger a separately designed analog reflectance adapter.
 
 ### StickS3 power and expansion caution
 
@@ -402,11 +434,13 @@ Wokwi remains the most useful automation layer for this repository because it ru
 
 ### Port architecture boundary
 
-The StickS3 prototype separates portable motion control and signal analysis from the RMT source and application. `BlinkInput` supplies normalized sensor-neutral samples, allowing a future analog TCRT5000 producer without changing classification or USB click behavior. HID remains in the application layer behind physical arming and validity gates. A generic ESP32 BLE transport is not implemented.
+The StickS3 prototype separates portable motion control, optical signal analysis, and `ImuBlinkDetector` from the RMT source and application. `BlinkInput` still supplies normalized sensor-neutral optical samples, allowing a future analog TCRT5000 producer without changing the optical classifier. The IMU classifier is independent and consumes calibrated raw and residual gyro magnitudes. HID remains in the application layer behind physical arming and current-boot validity gates; when IMU validation passes, the optical path is suppressed to prevent duplicate clicks. A generic ESP32 BLE transport is not implemented.
 
 ### Port timing model
 
-The StickS3 motion path uses the BMI270 sample timestamp for actual `dt`; gaps above 200 milliseconds produce no motion. The onboard-IR experiment samples at a nominal 35 millisecond interval and uses asynchronous receive plus blocking transmission of an 8 millisecond envelope. It emits no blink click without valid frames and passed calibration. Mouse reports are bounded and only emitted in physically armed mouse mode.
+The StickS3 motion path uses the BMI270 sample timestamp for actual `dt`; gaps above 200 milliseconds produce no motion. The guided IMU validation has three preparation stages followed by six seconds of normal blinking and stillness, fifteen seconds of deliberate four-blink groups, and twelve seconds of normal head movement. Detector input continues during the three-second preparation screens so the two-second initial quiet gate is genuine. A capture stage cannot be abandoned by holding the button mid-run. Mouse reports are bounded and emitted only in physically armed mode, and clicks are additionally blocked until the current boot proves its sequence gate.
+
+`sticks3/tools/replay_imu_capture.cpp` compiles the production detector for host replay against CDC CSV logs. This is the preferred tuning loop because it checks the exact C++ implementation rather than a separate analytical approximation. Physical acceptance still requires a remounted device because replay cannot prove sensor placement, comfort, or voluntary usability.
 
 ### Port source references
 
@@ -448,11 +482,19 @@ StickS3 over wired native USB is the implemented prototype direction for the nex
 
 ### StickS3 eye-sensor wiring
 
-No external eye sensor is assigned yet. First test the internal GPIO 46 transmitter and GPIO 42 receiver at the intended eye geometry using the guided protocol. If that fails the decision gates, the exact expansion pins, voltage rail, TCRT resistor values, and mechanical position still require a schematic and bench validation before connection.
+No external eye sensor is assigned yet. The internal GPIO 46 transmitter and GPIO 42 receiver failed the intended near-eye geometry and should not be aimed at the eye. If the remaining IMU rhythm test fails, the exact expansion pins, analog input, voltage rail, TCRT5000 current-limiting resistor, receiver circuit, and mechanical position require a schematic and bench validation before connection. Do not infer that a bare TCRT5000 can be wired directly to arbitrary StickS3 pins.
 
-### StickS3 mounting axes
+### StickS3 mounting and repeatability
 
-The relationship between the StickS3 BMI270 axes and the intended glasses or head mounting is unknown. The current Y-Z-X permutation and 90-degree roll baseline must not be copied without an orientation test matrix.
+One improvised glasses-mounted run produced useful pointer motion, but repeat placement, axis feel, sensitivity, comfort, and accidental movement after remounting are not yet characterized. The next session should flash the latest four-blink firmware, attach the device consistently, and repeat the approximately 45-second guided test before tuning movement or deciding on an external sensor.
+
+### Four-blink usability
+
+The replay evidence proves conservative separation for the recorded controls, not that four deliberate head-coupled blink impulses are reliable or accessible for the intended users. The unresolved decision is whether repeated groups of four firm blinks at roughly 0.6-second spacing can produce at least two intended sequences without still or normal-head false events. If that is inconsistent, tiring, or ever unsafe, stop tuning it and move to an analog reflectance sensor.
+
+### Device restoration
+
+The original 8 MB device image is backed up and ignored correctly, but has not been restored because one final hardware validation remains. After that experiment, restore the captured image and verify normal boot before returning the user's working StickS3 project. The exact application-level acceptance signal after restoration is user-specific and remains to be confirmed at that time.
 
 ### Transport priority
 
