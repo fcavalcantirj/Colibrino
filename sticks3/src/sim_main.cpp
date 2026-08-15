@@ -9,6 +9,7 @@
 
 #include <cmath>
 
+#include "colibrino/imu_blink_detector.h"
 #include "colibrino/motion_controller.h"
 #include "colibrino/signal_analysis.h"
 
@@ -103,6 +104,60 @@ void validateBlinkDetector() {
         first_blink && refractory_rejection && second_blink);
 }
 
+bool feedImuStill(colibrino::ImuBlinkDetector& detector, uint32_t& now_ms,
+                  uint32_t duration_ms) {
+  bool emitted = false;
+  for (uint32_t elapsed = 0; elapsed < duration_ms; elapsed += 5) {
+    const float noise = elapsed % 20 == 0 ? 0.12f : -0.06f;
+    emitted = detector.update(now_ms, {noise, -noise, 0.0f}) || emitted;
+    now_ms += 5;
+  }
+  return emitted;
+}
+
+bool feedImuBlinkImpulse(colibrino::ImuBlinkDetector& detector,
+                         uint32_t& now_ms) {
+  bool emitted = false;
+  for (size_t index = 0; index < 12; ++index) {
+    const float value = index < 4 ? -1.35f : (index < 8 ? 0.95f : 0.10f);
+    emitted =
+        detector.update(now_ms, {value, 0.2f * value, -0.1f * value}) ||
+        emitted;
+    now_ms += 5;
+  }
+  return emitted;
+}
+
+void validateImuBlinkSequence() {
+  colibrino::ImuBlinkDetector detector;
+  uint32_t now_ms = 0;
+  bool emitted = feedImuStill(detector, now_ms, 2100);
+  for (size_t impulse = 0; impulse < 4; ++impulse) {
+    emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+    if (impulse != 3) {
+      emitted = feedImuStill(detector, now_ms, 500) || emitted;
+    }
+  }
+  check("imu_four_blink_sequence",
+        emitted && detector.completedSequences() == 1);
+
+  detector.reset();
+  now_ms = 0;
+  emitted = feedImuStill(detector, now_ms, 2100);
+  for (size_t impulse = 0; impulse < 3; ++impulse) {
+    emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+    emitted = feedImuStill(detector, now_ms, 500) || emitted;
+  }
+  // Pointer-scale motion cancels all partial state and restarts the two-second
+  // quiet gate. A following pulse must not complete the old sequence.
+  emitted = detector.update(now_ms, {0.0f, 8.0f, 0.0f}) || emitted;
+  now_ms += 5;
+  emitted = feedImuStill(detector, now_ms, 2100) || emitted;
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  check("imu_short_and_motion_sequences_rejected",
+        !emitted && detector.completedSequences() == 0);
+}
+
 void validateFeasibilityProtocol() {
   colibrino::FeasibilityConfig config;
   config.preparation_ms = 10;
@@ -151,6 +206,7 @@ void setup() {
   validateGyroCalibration();
   validatePointerMotion();
   validateBlinkDetector();
+  validateImuBlinkSequence();
   validateFeasibilityProtocol();
 
   Serial.println(all_passed ? "COLIBRINO_SIM_PASS" : "COLIBRINO_SIM_FAIL");

@@ -9,6 +9,7 @@
 #include <USBHIDMouse.h>
 
 #include "colibrino/config.h"
+#include "colibrino/imu_blink_detector.h"
 #include "colibrino/motion_controller.h"
 #include "colibrino/signal_analysis.h"
 #include "ir_probe.h"
@@ -23,6 +24,7 @@ using colibrino::BlinkFeasibilityProtocol;
 using colibrino::BlinkSignalSample;
 using colibrino::FeasibilityStage;
 using colibrino::GyroBiasCalibrator;
+using colibrino::ImuBlinkDetector;
 using colibrino::MotionConfig;
 using colibrino::MotionController;
 using colibrino::PointerDelta;
@@ -31,6 +33,21 @@ using colibrino::Vec3;
 
 /// User-visible pages. Mode is also a safety boundary: only kMouse may emit HID.
 enum class AppMode : uint8_t { kIrProbe, kMotionMonitor, kMouse };
+
+/// High-rate diagnostic stages used to test whether a firmly mounted BMI270
+/// can distinguish deliberate blinks from stillness and ordinary head motion.
+/// A complete probe can validate the conservative runtime blink-sequence gate,
+/// but it never emits HID while capture is active.
+enum class ImuProbeStage : uint8_t {
+  kIdle,
+  kPrepareStill,
+  kCaptureStill,
+  kPrepareBlinks,
+  kCaptureBlinks,
+  kPrepareHeadMotion,
+  kCaptureHeadMotion,
+  kResult,
+};
 
 // Long-lived device services. USB interfaces are registered before USB.begin()
 // so CDC diagnostics and HID mouse enumerate as one native TinyUSB composite.
@@ -49,6 +66,8 @@ MotionController motion(MotionConfig{
     colibrino::config::kMaximumMouseReport,
 });
 GyroBiasCalibrator gyro_calibrator;
+ImuBlinkDetector probe_imu_blink_detector;
+ImuBlinkDetector runtime_imu_blink_detector;
 
 // Safety and input latches. The `*_hold_latched` flags ensure a continued
 // physical hold toggles state once rather than every loop iteration.
@@ -57,16 +76,33 @@ bool ir_powered = false;
 bool ir_hold_latched = false;
 bool mouse_armed = false;
 bool mouse_hold_latched = false;
+bool motion_hold_latched = false;
 bool motion_calibrated = false;
 bool feasibility_result_logged = false;
+bool imu_blink_validated = false;
 uint32_t calibration_started_ms = 0;
 uint32_t last_imu_timestamp_us = 0;
 uint32_t last_screen_ms = 0;
 uint32_t last_ir_log_ms = 0;
+uint32_t last_status_log_ms = 0;
+uint32_t imu_probe_stage_started_ms = 0;
+uint32_t imu_probe_samples = 0;
+uint32_t imu_still_sequences = 0;
+uint32_t imu_blink_sequences = 0;
+uint32_t imu_head_sequences = 0;
 Vec3 gyro_dps{};
 Vec3 gyro_bias{};
+Vec3 accel_g{};
 BlinkSignalSample latest_ir{};
 colibrino::BlinkDetector runtime_blink_detector;
+
+ImuProbeStage imu_probe_stage = ImuProbeStage::kIdle;
+
+constexpr uint32_t kImuPrepareMs = 3000;
+constexpr uint32_t kImuStillCaptureMs = 6000;
+constexpr uint32_t kImuBlinkCaptureMs = 15000;
+constexpr uint32_t kImuHeadCaptureMs = 12000;
+constexpr uint32_t kBlueHoldMs = 2000;
 
 const char* modeName(AppMode value) {
   switch (value) {
@@ -78,6 +114,120 @@ const char* modeName(AppMode value) {
       return "MOUSE";
   }
   return "UNKNOWN";
+}
+
+const char* imuProbeStageName(ImuProbeStage value) {
+  switch (value) {
+    case ImuProbeStage::kIdle:
+      return "IDLE";
+    case ImuProbeStage::kPrepareStill:
+      return "PREPARE_STILL";
+    case ImuProbeStage::kCaptureStill:
+      return "KEEP_HEAD_STILL";
+    case ImuProbeStage::kPrepareBlinks:
+      return "PREPARE_BLINKS";
+    case ImuProbeStage::kCaptureBlinks:
+      return "BLINK_FIRMLY";
+    case ImuProbeStage::kPrepareHeadMotion:
+      return "PREPARE_HEAD";
+    case ImuProbeStage::kCaptureHeadMotion:
+      return "MOVE_HEAD";
+    case ImuProbeStage::kResult:
+      return "CAPTURE_COMPLETE";
+  }
+  return "UNKNOWN";
+}
+
+bool imuProbeCapturing() {
+  return imu_probe_stage == ImuProbeStage::kCaptureStill ||
+         imu_probe_stage == ImuProbeStage::kCaptureBlinks ||
+         imu_probe_stage == ImuProbeStage::kCaptureHeadMotion;
+}
+
+bool imuProbeActive() {
+  return imu_probe_stage != ImuProbeStage::kIdle &&
+         imu_probe_stage != ImuProbeStage::kResult;
+}
+
+void advanceImuProbe(ImuProbeStage next, uint32_t now_ms) {
+  imu_probe_stage = next;
+  imu_probe_stage_started_ms = now_ms;
+  if (next == ImuProbeStage::kPrepareStill ||
+      next == ImuProbeStage::kPrepareBlinks ||
+      next == ImuProbeStage::kPrepareHeadMotion) {
+    // Each preparation phase starts with a fresh adaptive baseline. Feeding
+    // its full three seconds into the detector enforces the two-second quiet
+    // gate before capture while still carrying late preparation movement into
+    // the measured phase.
+    probe_imu_blink_detector.reset();
+  }
+  diagnostics.printf("EVENT,IMU_PROBE_STAGE,%s\n", imuProbeStageName(next));
+  last_screen_ms = 0;
+}
+
+void startImuProbe(uint32_t now_ms) {
+  imu_probe_samples = 0;
+  imu_still_sequences = 0;
+  imu_blink_sequences = 0;
+  imu_head_sequences = 0;
+  // Repeating the test invalidates the previous result until every safety
+  // phase passes again. Runtime state must never span a mount change.
+  imu_blink_validated = false;
+  runtime_imu_blink_detector.reset();
+  diagnostics.println(
+      "CSV: IMU,ms,usec,stage,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g");
+  diagnostics.println("EVENT,IMU_PROBE_STARTED");
+  advanceImuProbe(ImuProbeStage::kPrepareStill, now_ms);
+}
+
+void updateImuProbeClock(uint32_t now_ms) {
+  const uint32_t elapsed = now_ms - imu_probe_stage_started_ms;
+  switch (imu_probe_stage) {
+    case ImuProbeStage::kPrepareStill:
+      if (elapsed >= kImuPrepareMs) {
+        advanceImuProbe(ImuProbeStage::kCaptureStill, now_ms);
+      }
+      break;
+    case ImuProbeStage::kCaptureStill:
+      if (elapsed >= kImuStillCaptureMs) {
+        advanceImuProbe(ImuProbeStage::kPrepareBlinks, now_ms);
+      }
+      break;
+    case ImuProbeStage::kPrepareBlinks:
+      if (elapsed >= kImuPrepareMs) {
+        advanceImuProbe(ImuProbeStage::kCaptureBlinks, now_ms);
+      }
+      break;
+    case ImuProbeStage::kCaptureBlinks:
+      if (elapsed >= kImuBlinkCaptureMs) {
+        advanceImuProbe(ImuProbeStage::kPrepareHeadMotion, now_ms);
+      }
+      break;
+    case ImuProbeStage::kPrepareHeadMotion:
+      if (elapsed >= kImuPrepareMs) {
+        advanceImuProbe(ImuProbeStage::kCaptureHeadMotion, now_ms);
+      }
+      break;
+    case ImuProbeStage::kCaptureHeadMotion:
+      if (elapsed >= kImuHeadCaptureMs) {
+        imu_blink_validated = imu_still_sequences == 0 &&
+                              imu_blink_sequences >= 2 &&
+                              imu_head_sequences == 0;
+        runtime_imu_blink_detector.reset();
+        advanceImuProbe(ImuProbeStage::kResult, now_ms);
+        diagnostics.printf("EVENT,IMU_PROBE_COMPLETE,samples=%lu\n",
+                           static_cast<unsigned long>(imu_probe_samples));
+        diagnostics.printf(
+            "RESULT,IMU_BLINK,%s,still=%lu,blink=%lu,head=%lu\n",
+            imu_blink_validated ? "PASS" : "NOT_PROVEN",
+            static_cast<unsigned long>(imu_still_sequences),
+            static_cast<unsigned long>(imu_blink_sequences),
+            static_cast<unsigned long>(imu_head_sequences));
+      }
+      break;
+    default:
+      break;
+  }
 }
 
 void drawHeader() {
@@ -100,10 +250,10 @@ void drawIrScreen(uint32_t now_ms) {
     M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
     M5.Display.println("IR power is OFF");
     M5.Display.println("Disconnect external 5V");
-    M5.Display.println("then hold B for 2 sec");
+    M5.Display.println("hold BLUE for 2 sec");
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.println();
-    M5.Display.println("A: next mode");
+    M5.Display.println("tap BLUE: next mode");
     return;
   }
 
@@ -114,8 +264,8 @@ void drawIrScreen(uint32_t now_ms) {
   M5.Display.printf("stage: %s\n", colibrino::feasibilityStageName(stage));
 
   if (stage == FeasibilityStage::kIdle) {
-    M5.Display.println("B: start guided test");
-    M5.Display.println("hold B 2s: IR off");
+    M5.Display.println("tap BLUE: guided test");
+    M5.Display.println("hold BLUE 2s: IR off");
   } else if (stage == FeasibilityStage::kResult) {
     const auto& result = feasibility.result();
     M5.Display.setTextColor(result.passes ? TFT_GREEN : TFT_RED, TFT_BLACK);
@@ -123,7 +273,7 @@ void drawIrScreen(uint32_t now_ms) {
                       result.separation.separation_sigma);
     M5.Display.printf("blinks %u\n", result.detected_blinks);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-    M5.Display.println("B: repeat test");
+    M5.Display.println("tap BLUE: repeat test");
   } else {
     M5.Display.printf("elapsed: %.1fs\n",
                       feasibility.stageElapsedMs(now_ms) / 1000.0f);
@@ -131,15 +281,40 @@ void drawIrScreen(uint32_t now_ms) {
   }
 }
 
-void drawMotionScreen() {
+void drawMotionScreen(uint32_t now_ms) {
   drawHeader();
   M5.Display.setCursor(4, 31);
   M5.Display.printf("BMI270: %s\n", M5.Imu.isEnabled() ? "OK" : "MISSING");
-  M5.Display.printf("gyro X %7.2f\n", gyro_dps.x);
-  M5.Display.printf("gyro Y %7.2f\n", gyro_dps.y);
-  M5.Display.printf("gyro Z %7.2f\n", gyro_dps.z);
-  M5.Display.printf("bias: %s\n", motion_calibrated ? "READY" : "KEEP STILL");
-  M5.Display.println("A: next mode");
+  M5.Display.printf("stage: %s\n", imuProbeStageName(imu_probe_stage));
+  if (imu_probe_stage == ImuProbeStage::kIdle) {
+    M5.Display.println("wear glasses; face ahead");
+    M5.Display.println("tap BLUE: start capture");
+    M5.Display.println("hold BLUE 2s: mouse");
+  } else if (imu_probe_stage == ImuProbeStage::kResult) {
+    M5.Display.setTextColor(imu_blink_validated ? TFT_GREEN : TFT_RED,
+                            TFT_BLACK);
+    M5.Display.println(imu_blink_validated ? "IMU BLINK: PASS"
+                                           : "IMU BLINK: NOT PROVEN");
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.printf("still/blink/head %lu/%lu/%lu\n",
+                      static_cast<unsigned long>(imu_still_sequences),
+                      static_cast<unsigned long>(imu_blink_sequences),
+                      static_cast<unsigned long>(imu_head_sequences));
+    M5.Display.println("tap BLUE: repeat");
+  } else {
+    M5.Display.printf("elapsed: %.1fs\n",
+                      (now_ms - imu_probe_stage_started_ms) / 1000.0f);
+    if (imu_probe_stage == ImuProbeStage::kCaptureStill) {
+      M5.Display.println("stay still; blink normally");
+    } else if (imu_probe_stage == ImuProbeStage::kCaptureBlinks) {
+      M5.Display.println("4 firm blinks in rhythm");
+      M5.Display.println("~0.6s gaps; pause; repeat");
+    } else if (imu_probe_stage == ImuProbeStage::kCaptureHeadMotion) {
+      M5.Display.println("look left/right/up/down");
+    } else {
+      M5.Display.println("get ready for next stage");
+    }
+  }
 }
 
 void drawMouseScreen() {
@@ -149,11 +324,13 @@ void drawMouseScreen() {
   M5.Display.printf("OUTPUT: %s\n", mouse_armed ? "ARMED" : "LOCKED");
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.printf("motion: %s\n", motion_calibrated ? "READY" : "CALIBRATING");
-  const bool click_ready = feasibility.result().passes && ir_powered;
-  M5.Display.printf("blink click: %s\n", click_ready ? "VALIDATED" : "DISABLED");
-  M5.Display.println("hold A 2s: arm/lock");
-  M5.Display.println("B: test click");
-  M5.Display.println("tap A when locked: IR");
+  const bool optical_click_ready = feasibility.result().passes && ir_powered;
+  M5.Display.printf("blink click: %s\n",
+                    imu_blink_validated
+                        ? "IMU READY"
+                        : (optical_click_ready ? "IR READY" : "DISABLED"));
+  M5.Display.println("hold BLUE 2s: arm/lock");
+  M5.Display.println("tap BLUE when locked: IR");
 }
 
 void updateDisplay(uint32_t now_ms) {
@@ -166,7 +343,7 @@ void updateDisplay(uint32_t now_ms) {
       drawIrScreen(now_ms);
       break;
     case AppMode::kMotionMonitor:
-      drawMotionScreen();
+      drawMotionScreen(now_ms);
       break;
     case AppMode::kMouse:
       drawMouseScreen();
@@ -184,6 +361,11 @@ void cycleMode() {
     }
     mode = AppMode::kMotionMonitor;
   } else if (mode == AppMode::kMotionMonitor) {
+    if (imu_probe_stage != ImuProbeStage::kIdle &&
+        imu_probe_stage != ImuProbeStage::kResult) {
+      return;
+    }
+    imu_probe_stage = ImuProbeStage::kIdle;
     mode = AppMode::kMouse;
   } else if (!mouse_armed) {
     mode = AppMode::kIrProbe;
@@ -261,7 +443,8 @@ void updateIr(uint32_t now_ms) {
     }
   }
 
-  if (mode == AppMode::kMouse && mouse_armed && sample.valid &&
+  if (!imu_blink_validated && mode == AppMode::kMouse && mouse_armed &&
+      sample.valid &&
       runtime_blink_detector.configured() &&
       runtime_blink_detector.update(now_ms, sample.value)) {
     mouse.click(MOUSE_LEFT);
@@ -276,6 +459,38 @@ void updateImu(uint32_t now_ms) {
   }
   const auto data = M5.Imu.getImuData();
   gyro_dps = {data.gyro.x, data.gyro.y, data.gyro.z};
+  accel_g = {data.accel.x, data.accel.y, data.accel.z};
+
+  updateImuProbeClock(now_ms);
+  if (mode == AppMode::kMotionMonitor && imuProbeActive()) {
+    const bool sequence_detected =
+        probe_imu_blink_detector.update(now_ms, gyro_dps);
+    if (imuProbeCapturing()) {
+      ++imu_probe_samples;
+      if (sequence_detected) {
+        uint32_t* stage_sequences = nullptr;
+        if (imu_probe_stage == ImuProbeStage::kCaptureStill) {
+          stage_sequences = &imu_still_sequences;
+        } else if (imu_probe_stage == ImuProbeStage::kCaptureBlinks) {
+          stage_sequences = &imu_blink_sequences;
+        } else if (imu_probe_stage == ImuProbeStage::kCaptureHeadMotion) {
+          stage_sequences = &imu_head_sequences;
+        }
+        if (stage_sequences != nullptr) {
+          ++*stage_sequences;
+          diagnostics.printf("EVENT,IMU_BLINK_SEQUENCE_CANDIDATE,%s,%lu\n",
+                             imuProbeStageName(imu_probe_stage),
+                             static_cast<unsigned long>(*stage_sequences));
+        }
+      }
+      diagnostics.printf(
+          "IMU,%lu,%lu,%s,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f\n",
+          static_cast<unsigned long>(now_ms),
+          static_cast<unsigned long>(data.usec),
+          imuProbeStageName(imu_probe_stage), gyro_dps.x, gyro_dps.y,
+          gyro_dps.z, accel_g.x, accel_g.y, accel_g.z);
+    }
+  }
 
   if (!motion_calibrated) {
     // Calibration is deliberately per boot. Motion restarts the entire window
@@ -309,14 +524,41 @@ void updateImu(uint32_t now_ms) {
   if (mode == AppMode::kMouse && mouse_armed && (delta.x || delta.y)) {
     mouse.move(delta.x, delta.y);
   }
+  if (imu_blink_validated && mode == AppMode::kMouse && mouse_armed &&
+      runtime_imu_blink_detector.update(now_ms, gyro_dps)) {
+    mouse.click(MOUSE_LEFT);
+    diagnostics.println("EVENT,IMU_BLINK_SEQUENCE_CLICK");
+  }
+}
+
+void logStatus(uint32_t now_ms) {
+  // Boot messages can precede host CDC attachment. A low-rate status record
+  // makes current safety and sensor state observable after any reconnect.
+  if (now_ms - last_status_log_ms < 1000) {
+    return;
+  }
+  last_status_log_ms = now_ms;
+  diagnostics.printf(
+      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f\n",
+      static_cast<unsigned long>(now_ms),
+      M5.getBoard() == m5::board_t::board_M5StickS3 ? "StickS3" : "UNKNOWN",
+      modeName(mode), mouse_armed, M5.Imu.isEnabled(), motion_calibrated,
+      imu_blink_validated, ir_powered,
+      colibrino::feasibilityStageName(feasibility.stage()),
+      imuProbeStageName(imu_probe_stage),
+      gyro_dps.x, gyro_dps.y, gyro_dps.z);
 }
 
 void handleButtons(uint32_t now_ms) {
-  // Long holds control power/arming; taps navigate or trigger deliberate tests.
+  // The physically verified large blue Button A owns the complete workflow.
+  // This avoids relying on an ambiguous side control near reset/power. Long
+  // holds control IR power, mode transitions, or mouse arming; taps navigate or
+  // start a guided probe. Mouse HID remains locked throughout both probes.
   // M5Unified owns debouncing and click/hold timing, while local latches make
   // the state toggles edge-like.
+  const bool blue_clicked = M5.BtnA.wasClicked();
   if (mode == AppMode::kIrProbe) {
-    if (M5.BtnB.pressedFor(2000) && !ir_hold_latched) {
+    if (M5.BtnA.pressedFor(kBlueHoldMs) && !ir_hold_latched) {
       ir_hold_latched = true;
       if (ir_powered) {
         disableIrProbe();
@@ -324,37 +566,56 @@ void handleButtons(uint32_t now_ms) {
         enableIrProbe();
       }
     }
-    if (!M5.BtnB.isPressed()) {
-      ir_hold_latched = false;
-    }
-    if (ir_powered && M5.BtnB.wasClicked()) {
+    if (ir_powered && blue_clicked && !ir_hold_latched) {
       feasibility.start(now_ms);
       runtime_blink_detector = {};
       feasibility_result_logged = false;
       diagnostics.println("EVENT,IR_GUIDED_TEST_STARTED");
     }
+    if (!M5.BtnA.isPressed()) {
+      ir_hold_latched = false;
+    }
+    if (!ir_powered && blue_clicked && !ir_hold_latched) {
+      cycleMode();
+    }
+    return;
+  }
+
+  if (mode == AppMode::kMotionMonitor) {
+    const bool may_leave_probe = imu_probe_stage == ImuProbeStage::kIdle ||
+                                 imu_probe_stage == ImuProbeStage::kResult;
+    if (may_leave_probe && M5.BtnA.pressedFor(kBlueHoldMs) &&
+        !motion_hold_latched) {
+      motion_hold_latched = true;
+      cycleMode();
+    }
+    if (!M5.BtnA.isPressed()) {
+      motion_hold_latched = false;
+    }
+    if (blue_clicked && !motion_hold_latched &&
+        (imu_probe_stage == ImuProbeStage::kIdle ||
+         imu_probe_stage == ImuProbeStage::kResult)) {
+      startImuProbe(now_ms);
+    }
+    return;
   }
 
   if (mode == AppMode::kMouse) {
-    if (M5.BtnA.pressedFor(2000) && !mouse_hold_latched &&
+    if (M5.BtnA.pressedFor(kBlueHoldMs) && !mouse_hold_latched &&
         motion_calibrated) {
       mouse_hold_latched = true;
       mouse_armed = !mouse_armed;
       motion.reset();
+      runtime_imu_blink_detector.reset();
       diagnostics.printf("EVENT,MOUSE_OUTPUT,%s\n",
                          mouse_armed ? "ARMED" : "LOCKED");
     }
     if (!M5.BtnA.isPressed()) {
       mouse_hold_latched = false;
     }
-    if (mouse_armed && M5.BtnB.wasClicked()) {
-      mouse.click(MOUSE_LEFT);
-      diagnostics.println("EVENT,BUTTON_TEST_CLICK");
+    if (blue_clicked && !mouse_armed && !mouse_hold_latched) {
+      cycleMode();
     }
-  }
-
-  if (M5.BtnA.wasClicked() && !mouse_armed) {
-    cycleMode();
   }
 }
 
@@ -370,6 +631,11 @@ void setup() {
   m5_config.internal_mic = false;
   m5_config.output_power = false;
   M5.begin(m5_config);
+
+  // M5Unified otherwise classifies a 500 ms press as a hold, creating an
+  // unresponsive gap before Colibrino's intentional two-second hold action.
+  // Matching both thresholds makes every shorter release a reliable tap.
+  M5.BtnA.setHoldThresh(kBlueHoldMs);
 
   // Official StickS3 IR guidance requires the speaker power amplifier off
   // during reception. Internal speaker initialization is disabled above; this
@@ -407,6 +673,7 @@ void loop() {
   handleButtons(now_ms);
   updateImu(now_ms);
   updateIr(now_ms);
+  logStatus(now_ms);
   updateDisplay(now_ms);
   delay(1);
 }

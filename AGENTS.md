@@ -77,14 +77,15 @@ The StickS3 boots in IR probe mode with external 5 V off. The internal speaker
 and microphone remain disabled. BMI270 bias calibration starts immediately and
 restarts whenever motion makes the sample standard deviation unsafe.
 
-Button A cycles IR probe, motion monitor, and mouse mode only while mouse output
-is locked. In mouse mode, holding A for two seconds after calibration toggles
-armed versus locked output. The device cannot leave mouse mode while armed.
+The physically verified large blue Button A owns the application workflow; the
+side power/reset control is not an application input. Button A cycles IR probe,
+motion monitor, and mouse mode only while mouse output is locked. In mouse mode,
+holding A for two seconds after calibration toggles armed versus locked output.
+The device cannot leave mouse mode while armed.
 
-In IR mode, holding B for two seconds toggles the controlled IR power rail.
-When IR is powered, tapping B starts or repeats the guided open-eye, closed-eye,
-and blink sequence. In armed mouse mode, tapping B sends a deliberate test
-click.
+In IR mode, holding the large blue button for two seconds toggles the controlled
+IR power rail. When IR is powered, tapping it starts or repeats the guided
+open-eye, closed-eye, and blink sequence.
 
 Blink-generated clicks require all of the following in the current boot: valid
 IR samples, a passed guided feasibility session, mouse mode, and physically

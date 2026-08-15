@@ -12,15 +12,15 @@ tetraplegia, artrogripose, amputações e paralisia cerebral.
 
 > **Accessibility safety:** unintended movement, false clicks, stuck buttons,
 > and unsafe sensor power can have real consequences. The StickS3 firmware is
-> deliberately locked at boot and has not yet completed physical-device
-> validation.
+> deliberately locked at boot. Physical USB and head-motion tests pass; blink
+> clicking remains disabled until its stricter validation succeeds.
 
 ## Project status
 
 | Target | Hardware | Click sensor | Status |
 | --- | --- | --- | --- |
 | Legacy | Arduino Leonardo or Pro Micro, MPU6050 | External TCRT5000 | Historical working implementation; preserved under `arduino project/` |
-| StickS3 | M5Stack StickS3 with internal BMI270 | Onboard IR experiment; optional future TCRT5000 | Implemented, host-tested, ESP32-S3-simulated, and build-verified; fresh-device testing pending |
+| StickS3 | M5Stack StickS3 with internal BMI270 | Experimental BMI270 blink gesture; optional future TCRT5000 | Composite USB, BMI270, controls, and head pointer verified on hardware; safe blink input still under validation |
 
 The StickS3 port is the active development path. It does not replace or modify
 the legacy AVR firmware.
@@ -28,14 +28,23 @@ the legacy AVR firmware.
 ## What the StickS3 port provides
 
 The new implementation uses the built-in BMI270 for pointer motion and native
-USB for composite diagnostic CDC plus HID mouse operation. It starts with mouse
-reports locked and the IR power rail off. Physical two-second holds are required
-to arm either potentially unsafe operation.
+USB for composite diagnostic CDC plus HID mouse operation. Both interfaces,
+stationary calibration, the controls, and head-driven cursor movement have run
+on a real StickS3. It starts with mouse reports locked and the IR power rail off;
+a physical two-second hold is required before any mouse report can be emitted.
 
-The built-in IR receiver is a digital demodulating receiver, not the analog
-reflectance channel used by the original TCRT5000. The firmware therefore runs a
-guided experiment before allowing blink-generated clicks. No external sensor
-purchase is recommended until that experiment is completed on the fresh board.
+The built-in IR receiver is a digital demodulating remote-control receiver, not
+the analog reflectance channel used by the original TCRT5000. Real near-eye
+tests did not produce separable eyelid data, and M5Stack specifies at least
+30 cm between its transmitter and receiver. The source retains the diagnostic
+probe, but onboard IR is not recommended as a near-eye click path.
+
+The current no-purchase experiment instead recognizes a deliberate four-blink
+rhythm from tiny BMI270 motion transferred through firmly mounted glasses. It
+requires two seconds without pointer-scale rotation, rejects shorter sequences,
+and must produce at least two intended sequences with zero events during normal
+blinking and head motion before clicking becomes available. It has not yet met
+that complete hardware gate.
 
 ```mermaid
 flowchart LR
@@ -43,10 +52,12 @@ flowchart LR
     Cal --> Motion[Filtered motion controller]
     Motion --> Lock{Mouse physically armed?}
     Lock -->|yes| HID[USB HID movement]
-    IR[Onboard IR pair] --> RMT[RMT envelope measurement]
-    RMT --> Gate[Open/closed and blink feasibility gate]
-    Gate -->|passed this boot| Click[USB HID click]
-    Gate -->|not proven| Disabled[Clicks disabled]
+    BMI270 --> Gesture[Four-blink IMU sequence]
+    Gesture --> Safety[Stillness and control-stage gate]
+    Safety -->|passed this boot| Click[USB HID click]
+    Safety -->|not proven| Disabled[Clicks disabled]
+    IR[Onboard IR pair] --> RMT[Diagnostic RMT probe]
+    RMT --> Rejected[Near-eye path not proven]
 ```
 
 ## Quick start for developers
@@ -82,21 +93,24 @@ No currently available tool emulates the complete StickS3.
 | [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/tools/qemu.html) | ESP32-S3 CPU, memory, and selected SoC peripherals | Complete StickS3 board behavior or eye reflection |
 | [UiFlow2](https://docs.m5stack.com/en/uiflow2/sticks3/program) | UI design and deployment to a connected StickS3 | Hardware-free execution |
 
-The fresh StickS3 remains required to validate the BMI270 mounting axes,
-M5PM1-controlled power, onboard IR optical response, buttons, display, and
-native USB CDC/HID enumeration.
+Simulation still cannot establish board-specific behavior. Those boundaries
+were tested on hardware, while future changes to buttons, M5PM1 power, BMI270
+timing, USB, or mounting geometry still require another physical regression run.
 
-## Fresh-device decision gate
+## Current click-sensor decision
 
-Test the integrated IR path twice at the intended eye distance under different
-ambient lighting. Each run uses five deliberate blinks. Keep the onboard sensor
-only if each run detects at least four of five blinks and a 30-second open-eye
-control produces no false click.
+Two high-rate glasses-mounted captures now provide the tuning corpus. The first
+contains three recognizable deliberate four-blink sequences and no still/head
+events. The second, deliberately harder run contains no events in ordinary
+blinking or head motion after conservative offline retuning, but only one
+recognized intentional sequence. Because the firmware requires two, the result
+correctly remains `NOT_PROVEN` and cannot click.
 
-If the signal remains inseparable, recall stays below four of five after
-positioning trials, or the open-eye control produces false clicks, add an analog
-reflectance sensor such as the TCRT5000 through the existing sensor-neutral
-input boundary.
+Repeat the guided IMU test on the fixed mount before buying anything. If the
+four-blink gesture cannot repeatedly pass without control-stage events, add an
+analog reflectance sensor such as the TCRT5000 through the existing
+sensor-neutral input boundary. The integrated IR pair itself is no longer the
+recommended alternative.
 
 ## Legacy build
 

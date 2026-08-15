@@ -5,7 +5,7 @@
     "soc": "ESP32-S3-PICO-1-N8R8",
     "framework": "Arduino on PlatformIO",
     "transport": "native USB composite CDC and HID mouse",
-    "current_device_policy": "Do not flash or alter the StickS3 currently in use; all device tests wait for the fresh unit."
+    "current_device_policy": "Before flashing a StickS3 used by another project, identify its serial port and preserve the complete flash under ignored .device-backups. The tested unit has a verified recovery image; restore it after Colibrino hardware work is complete."
   },
   "validated_facts": [
     {
@@ -35,6 +35,18 @@
     {
       "fact": "No public tool currently provides a complete StickS3 emulator.",
       "validation": "M5Stack lv_m5_emulator is a native SDL UI tool whose current targets omit StickS3; UiFlow2 runs programs on a connected device; Espressif QEMU covers the ESP32-S3 SoC only; Wokwi exposes a generic ESP32-S3 rather than the complete board."
+    },
+    {
+      "fact": "The tested StickS3 enumerates as a native TinyUSB composite CDC and HID mouse, initializes its BMI270, accepts the large blue Button A, and moves the host pointer from head motion while mounted on glasses.",
+      "validation": "Physical 2026-08-14 bench and worn-device tests; a stationary armed control produced zero host input events before the worn pointer test."
+    },
+    {
+      "fact": "The integrated IR pair is not a viable near-eye reflectance sensor in the tested geometry.",
+      "validation": "Multiple physical tests produced inseparable or malformed near-eye data; M5Stack specifies direct TX/RX alignment at no less than 30 cm and warns that shorter spacing causes abnormal reception."
+    },
+    {
+      "fact": "Firm blinks transfer measurable sub-degree-per-second impulses through a rigid glasses mount to the BMI270, but a two-blink detector is unsafe.",
+      "validation": "Two retained 200 Hz captures. The original two-blink detector produced control-stage events; conservative four-impulse retuning replays both captures with zero stillness and head-motion sequences, while the harder intentional stage still recognizes only one sequence and remains NOT_PROVEN."
     }
   ],
   "tasks": [
@@ -51,24 +63,26 @@
     {
       "id": "T2",
       "name": "Safe USB head-mouse prototype",
-      "status": "implemented_pending_hardware",
+      "status": "implemented_and_hardware_validated",
       "acceptance": [
         "BMI270 data calibrates only while stationary.",
         "Movement uses gyro rate with filtering, deadzone, fractional accumulation, and bounded HID reports.",
         "The device emits no pointer movement until mouse mode is physically armed for two seconds.",
-        "Axis directions are verified and adjusted on the glasses mount before user testing."
+        "Axis directions are verified on the glasses mount and head motion moves the host pointer.",
+        "A stationary armed control produces no spontaneous HID movement."
       ]
     },
     {
       "id": "T3",
       "name": "Onboard IR blink feasibility probe",
-      "status": "implemented_pending_hardware",
+      "status": "implemented_hardware_rejected_for_near_eye",
       "acceptance": [
         "Transmit GPIO46 emits a controlled 38 kHz carrier envelope through RMT.",
         "Receive GPIO42 captures raw demodulated pulse timing through RMT.",
         "CDC logs retain timestamp, validity, symbol count, active time, total time, normalized ratio, and protocol stage.",
         "The guided test measures open eye, closed eye, and repeated blinks without assuming signal polarity.",
-        "A pass requires at least 20 valid frames in each baseline, at least 4 sigma separation, at least 15 percent relative change, and at least two human-duration blink events."
+        "A pass requires at least 20 valid frames in each baseline, at least 4 sigma separation, at least 15 percent relative change, and at least two human-duration blink events.",
+        "Physical near-eye failure is retained as evidence and does not get relabeled as a capability."
       ]
     },
     {
@@ -78,19 +92,20 @@
       "acceptance": [
         "Blink classification consumes a sensor-neutral normalized sample.",
         "A future analog TCRT5000 implementation can replace the onboard IR producer without changing USB click behavior.",
-        "No TCRT5000 purchase is recommended before the onboard test gate is evaluated."
+        "No TCRT5000 purchase is recommended until the IMU-only sequence receives one repeat validation run."
       ]
     },
     {
       "id": "T5",
-      "name": "Fresh-device bench validation",
-      "status": "blocked_until_fresh_device_arrives",
+      "name": "StickS3 bench validation",
+      "status": "partially_complete",
       "acceptance": [
         "Firmware build completes without flashing as the pre-hardware gate.",
-        "Fresh StickS3 enumerates as both CDC and HID without spontaneous mouse reports.",
+        "StickS3 enumerates as both CDC and HID without spontaneous mouse reports.",
         "Display reports BMI270 and stationary calibration succeeds.",
-        "IR test is repeated at the intended eye distance and geometry in at least two ambient-light conditions.",
-        "Five deliberate blinks are attempted per run and raw CSV is retained."
+        "Worn-device head motion moves the pointer with the expected axes.",
+        "High-rate stillness, deliberate-blink, and ordinary-head-motion CSV is retained outside Git.",
+        "The tightened IMU sequence passes two deliberate groups and produces zero control-stage events in a fresh run."
       ]
     },
     {
@@ -98,16 +113,28 @@
       "name": "Generic ESP32-S3 simulator gate",
       "status": "implemented_and_validated",
       "acceptance": [
-        "The portable production motion and blink-analysis sources cross-compile for a generic ESP32-S3 target.",
+        "The portable production motion, optical blink-analysis, and IMU sequence sources cross-compile for a generic ESP32-S3 target.",
         "Wokwi CLI lints the diagram and boots the firmware image.",
-        "The simulated firmware validates stationary gyro calibration, moving-calibration rejection, cursor deadzone, pointer direction and accumulation, invalid timestep rejection, optical separation, blink timing and refractory behavior, and the complete guided feasibility protocol.",
+        "The simulated firmware validates stationary gyro calibration, moving-calibration rejection, cursor deadzone, pointer direction and accumulation, invalid timestep rejection, optical separation, blink timing, the four-impulse IMU sequence, head-motion cancellation, and the complete guided feasibility protocol.",
         "The run emits COLIBRINO_SIM_PASS and does not claim to validate unmodeled StickS3 peripherals or optics."
+      ]
+    },
+    {
+      "id": "T7",
+      "name": "IMU-only blink gesture",
+      "status": "implemented_pending_repeat_hardware",
+      "acceptance": [
+        "One through three temple impulses never recommend a click.",
+        "Four bounded impulses are required with 350 through 1100 milliseconds between adjacent impulses.",
+        "Pointer-scale rotation cancels partial state and suppresses detection for two quiet seconds.",
+        "A guided run records zero sequences during ordinary blinking, at least two during deliberate four-blink groups, and zero during head movement.",
+        "Runtime HID clicking remains disabled unless the complete current-boot guided run passes."
       ]
     }
   ],
   "simulation_boundary": {
-    "validated_in_wokwi": "ESP32-S3 compilation and execution of sensor-independent motion, statistics, blink detection, and feasibility state-machine logic.",
-    "requires_sticks3_hardware": "BMI270 initialization and axis orientation, M5PM1 power control, display, buttons, internal IR electrical and optical behavior, composite TinyUSB CDC/HID enumeration, and end-to-end cursor/click behavior.",
+    "validated_in_wokwi": "ESP32-S3 compilation and execution of sensor-independent motion, statistics, optical blink detection, four-impulse IMU detection, cancellation gates, and feasibility state-machine logic.",
+    "requires_sticks3_hardware": "Regression of BMI270 mounting behavior, M5PM1 power control, display, buttons, composite TinyUSB CDC/HID, the IMU gesture across users and remounts, and any external click sensor.",
     "available_tools": [
       {
         "name": "Wokwi",
@@ -136,14 +163,14 @@
     ]
   },
   "sensor_purchase_decision": {
-    "onboard_ir_pass": "Keep the integrated IR path only if two repeat runs pass and at least four of five deliberate blinks are detected in each run with no false click during a 30-second open-eye control.",
-    "inconclusive_retest": "Reposition and repeat when valid frames are below 80 percent or geometry changed during capture.",
-    "external_sensor_required": "Use an external analog reflectance sensor such as TCRT5000 when open/closed separation remains below the gate, deliberate-blink recall is below four of five after positioning trials, or false clicks appear in the open-eye control."
+    "onboard_ir_pass": "Do not use the integrated demodulating IR pair as a near-eye click sensor; its documented spacing and physical results reject that geometry.",
+    "imu_retest": "Repeat the guided four-blink run on the final rigid mount. Keep it only if at least two intentional sequences and zero ordinary-blink or head-motion sequences are recorded in repeated sessions.",
+    "external_sensor_required": "Use a separately bench-designed analog reflectance sensor such as TCRT5000 when the IMU gesture cannot pass consistently, is too tiring, or produces any control-stage event after conservative tuning."
   },
   "remaining_hardware_questions": [
-    "Which StickS3 gyro axes and signs correspond to horizontal and vertical cursor motion in the final glasses mount?",
-    "Does the fixed physical spacing and optical orientation of the integrated IR pair return enough modulated reflection from an eyelid at the intended distance?",
-    "Does direct transmitter-to-receiver optical coupling saturate the digital receiver and erase the open-versus-closed difference?",
-    "What mounting position provides repeatable blink sensing without putting the StickS3 body in the user's field of view?"
+    "Does the four-blink BMI270 gesture remain separable after repeated removal and remounting of the glasses?",
+    "Is a four-blink click usable enough for the intended user, or only a proof that no external sensor is electrically required?",
+    "If an external analog sensor is needed, which expansion pins, supply rail, resistor values, and mechanical position meet electrical and eye-safety constraints?",
+    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?"
   ]
 }
