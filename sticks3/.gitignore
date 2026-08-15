@@ -1,2 +1,3 @@
 .pio/
 .device-backups/
+include/colibrino_secrets.h

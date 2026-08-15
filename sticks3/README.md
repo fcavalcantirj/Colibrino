@@ -18,6 +18,7 @@ are verified. Click sensing remains experimental and fails closed.
 | Production firmware build | Passing | Pinned PlatformIO environment links composite CDC/HID firmware |
 | StickS3 display, buttons, and BMI270 | Passing on tested unit | BMI270 detected and calibrated; large blue Button A and status display exercised |
 | Native USB and head pointer | Passing on tested unit | Composite CDC/HID enumerated; stationary armed control emitted no reports; worn head motion moved the cursor |
+| Authenticated OTA | Build-validated; one-time bootstrap pending | Reuses the original `sticks3-ptt.local` identity and password; uploader verifies the saved hardware MAC before transfer |
 | Onboard IR eyelid response | Rejected for near-eye use | Guided tests were inseparable; M5Stack specifies at least 30 cm TX/RX spacing |
 | IMU blink gesture | Pending repeat hardware gate | Two captures tune a four-blink sequence; the harder capture remains `NOT_PROVEN` |
 | Need for external TCRT5000 | Deferred | Buy only if repeat IMU validation remains unusable or unsafe |
@@ -48,6 +49,11 @@ IMU sequence detector under `include/colibrino/` and their matching sources are
 hardware-independent. `tools/replay_imu_capture.cpp` runs captured device CSV
 through the exact production detector.
 
+The application also owns optional Wi-Fi and ArduinoOTA. OTA is compiled only
+when ignored `include/colibrino_secrets.h` exists. Starting an update locks HID,
+releases mouse buttons, invalidates the current blink gate, cancels capture, and
+forces external 5 V off before the updater takes control of the loop.
+
 ## Safe build and test
 
 Install PlatformIO, then run from this directory:
@@ -64,6 +70,35 @@ and keep recovery images and logs under ignored `.device-backups/`.
 The production build pins `espressif32@6.12.0` and `M5Unified@0.2.19`. It uses
 native TinyUSB mode because hardware USB-JTAG CDC mode cannot host the required
 composite HID mouse interface.
+
+## Authenticated OTA
+
+The tested StickS3 was originally the `sticks3-ptt` terminal, whose established
+firmware already used authenticated ArduinoOTA. Colibrino preserves that
+physical device's Wi-Fi credentials, OTA password, and `sticks3-ptt.local`
+identity through an ignored local header. Copy the example only when preparing
+a different device:
+
+```sh
+cp include/colibrino_secrets.h.example include/colibrino_secrets.h
+```
+
+Never commit the resulting header. The repository-root ignored `.env` must set
+`COLIBRINO_OTA_SECRETS`, `COLIBRINO_OTA_HOST`, and
+`COLIBRINO_OTA_EXPECTED_MAC`. The upload wrapper builds first, resolves the
+hostname, checks the ARP MAC against the expected StickS3, and then invokes
+Espressif's authenticated OTA tool:
+
+```sh
+./scripts/upload_ota.sh
+```
+
+The wrapper explicitly refuses a different S3 such as
+`bedside-countdown-s3`. OTA updates firmware; they do not provide wireless HID
+or replace USB CDC diagnostics. The older Colibrino image currently on the
+tested unit predates this listener, so it requires one final cable flash. Once
+this image is installed and verified at `sticks3-ptt.local`, subsequent
+Colibrino builds can use OTA while the device is awake and on the same LAN.
 
 ## Wokwi simulator gate
 
@@ -166,9 +201,9 @@ platformio device monitor --baud 115200
 ```
 
 A one-hertz `STATUS` record repeats the detected board, mode, arming state,
-BMI270/calibration state, IMU-blink validation, IR state, both protocol stages,
-and raw gyro values. This remains available even when one-time boot messages
-occurred before CDC opened.
+BMI270/calibration state, IMU-blink validation, IR state, OTA state, both
+protocol stages, and raw gyro values. This remains available even when one-time
+boot messages occurred before CDC opened.
 
 IR frames use this CSV schema:
 
@@ -258,6 +293,8 @@ design before connection.
 | `include/colibrino/signal_analysis.h`, `src/signal_analysis.cpp` | Streaming statistics, calibration gates, blink detector, and guided protocol |
 | `test/` | Native Unity regression tests |
 | `src/sim_main.cpp` | Deterministic ESP32-S3 Wokwi validation firmware |
+| `include/colibrino_secrets.h.example` | Untracked Wi-Fi and OTA configuration template |
+| `scripts/upload_ota.sh` | Authenticated OTA build/upload with hostname and hardware-MAC guard |
 | `tools/replay_imu_capture.cpp` | Exact production-detector replay of ignored device CSV |
 | `diagram.json`, `wokwi.toml` | Wokwi board and firmware configuration |
 | `PORT_PLAN.json` | Machine-readable facts, task state, and hardware acceptance criteria |
@@ -268,4 +305,7 @@ A software-only change is ready to hand off when native tests pass, the
 production image builds without upload, the Wokwi gate passes when portable
 logic changed, `PORT_PLAN.json` remains valid JSON, generated files and secrets
 remain untracked, both retained IMU captures are replayed after detector tuning,
-and every hardware-dependent claim is still labeled as such.
+and every hardware-dependent claim is still labeled as such. Never send a
+credential-bearing production image to Wokwi; its simulator environment builds
+only the portable `sim_main.cpp` image and must remain isolated from the ignored
+OTA header.

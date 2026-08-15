@@ -4,8 +4,8 @@
     "device": "M5Stack StickS3",
     "soc": "ESP32-S3-PICO-1-N8R8",
     "framework": "Arduino on PlatformIO",
-    "transport": "native USB composite CDC and HID mouse",
-    "current_device_policy": "Before flashing a StickS3 used by another project, identify its serial port and preserve the complete flash under ignored .device-backups. The tested unit has a verified recovery image; restore it after Colibrino hardware work is complete."
+    "transport": "native USB composite CDC and HID mouse, plus authenticated Wi-Fi OTA when ignored credentials are present",
+    "current_device_policy": "Before flashing a StickS3 used by another project, identify its serial port and preserve the complete flash under ignored .device-backups. The tested unit has a verified recovery image. OTA must resolve sticks3-ptt.local and match the saved AC:27:6E:D2:68:B8 hardware MAC; bedside-countdown-s3 is a separate device and must never be targeted."
   },
   "validated_facts": [
     {
@@ -47,6 +47,10 @@
     {
       "fact": "Firm blinks transfer measurable sub-degree-per-second impulses through a rigid glasses mount to the BMI270, but a two-blink detector is unsafe.",
       "validation": "Two retained 200 Hz captures. The original two-blink detector produced control-stage events; conservative four-impulse retuning replays both captures with zero stillness and head-motion sequences, while the harder intentional stage still recognizes only one sequence and remains NOT_PROVEN."
+    },
+    {
+      "fact": "The tested StickS3's original PTT project supports authenticated ArduinoOTA as sticks3-ptt.local, while bedside-countdown-s3 is a separate LilyGO T-Display-S3.",
+      "validation": "Read-only inspection of the original PTT build script and firmware, live mDNS discovery of the separate bedside board, and saved hardware identities. Colibrino now preserves the PTT OTA credentials and hostname behind ignored configuration and a MAC-guarded uploader."
     }
   ],
   "tasks": [
@@ -130,6 +134,19 @@
         "A guided run records zero sequences during ordinary blinking, at least two during deliberate four-blink groups, and zero during head movement.",
         "Runtime HID clicking remains disabled unless the complete current-boot guided run passes."
       ]
+    },
+    {
+      "id": "T8",
+      "name": "Authenticated StickS3 OTA",
+      "status": "implemented_build_validated_pending_one_time_bootstrap",
+      "acceptance": [
+        "Wi-Fi and ArduinoOTA compile only when the ignored device secrets header is available.",
+        "The service reuses the tested unit's established sticks3-ptt.local identity and authenticated password.",
+        "OTA start locks HID, releases mouse buttons, invalidates blink validation, cancels capture, and disables external 5 V before transfer.",
+        "The upload wrapper refuses any resolved device whose ARP MAC differs from AC:27:6E:D2:68:B8.",
+        "One cable flash installs the listener because the currently installed older Colibrino image has no OTA service.",
+        "After bootstrap, two authenticated OTA round trips succeed while the bedside-countdown-s3 remains untouched."
+      ]
     }
   ],
   "simulation_boundary": {
@@ -171,6 +188,7 @@
     "Does the four-blink BMI270 gesture remain separable after repeated removal and remounting of the glasses?",
     "Is a four-blink click usable enough for the intended user, or only a proof that no external sensor is electrically required?",
     "If an external analog sensor is needed, which expansion pins, supply rail, resistor values, and mechanical position meet electrical and eye-safety constraints?",
-    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?"
+    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?",
+    "Does the first cable-bootstrap build advertise authenticated OTA as sticks3-ptt.local and complete two guarded round trips without affecting USB HID timing?"
   ]
 }

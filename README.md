@@ -46,6 +46,14 @@ and must produce at least two intended sequences with zero events during normal
 blinking and head motion before clicking becomes available. It has not yet met
 that complete hardware gate.
 
+Authenticated Wi-Fi OTA is now part of the StickS3 application whenever its
+ignored local secrets header is present. It deliberately reuses the tested
+unit's established `sticks3-ptt.local` identity, locks HID and external IR power
+before accepting an update, and refuses the uploader when the resolved MAC does
+not match the saved Colibrino StickS3. The currently installed older Colibrino
+test image has no OTA listener, so one cable bootstrap is still required; later
+firmware iterations can be delivered over Wi-Fi.
+
 ```mermaid
 flowchart LR
     BMI270[BMI270 gyro] --> Cal[Stationary bias calibration]
@@ -68,6 +76,12 @@ The commands below build and test without uploading anything. Run them from
 ```sh
 platformio test -e native
 platformio run -e m5stack-sticks3
+```
+
+After the one-time OTA bootstrap, an authenticated update is:
+
+```sh
+./scripts/upload_ota.sh
 ```
 
 The simulator gate requires the Wokwi CLI and `WOKWI_CLI_TOKEN` in the process

@@ -8,6 +8,16 @@
 #include <USB.h>
 #include <USBHIDMouse.h>
 
+#if __has_include("colibrino_secrets.h")
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
+#include <WiFi.h>
+#include "colibrino_secrets.h"
+#define COLIBRINO_OTA_CONFIGURED 1
+#else
+#define COLIBRINO_OTA_CONFIGURED 0
+#endif
+
 #include "colibrino/config.h"
 #include "colibrino/imu_blink_detector.h"
 #include "colibrino/motion_controller.h"
@@ -103,6 +113,15 @@ constexpr uint32_t kImuStillCaptureMs = 6000;
 constexpr uint32_t kImuBlinkCaptureMs = 15000;
 constexpr uint32_t kImuHeadCaptureMs = 12000;
 constexpr uint32_t kBlueHoldMs = 2000;
+
+#if COLIBRINO_OTA_CONFIGURED
+constexpr char kOtaHostname[] = "sticks3-ptt";
+bool ota_network_started = false;
+bool ota_service_started = false;
+bool ota_in_progress = false;
+uint8_t ota_last_percent = 255;
+uint32_t ota_network_started_ms = 0;
+#endif
 
 const char* modeName(AppMode value) {
   switch (value) {
@@ -397,6 +416,126 @@ void disableIrProbe() {
   diagnostics.println("EVENT,IR_POWER,OFF");
 }
 
+const char* otaStateName() {
+#if COLIBRINO_OTA_CONFIGURED
+  if (ota_in_progress) {
+    return "UPDATING";
+  }
+  if (ota_service_started && WiFi.status() == WL_CONNECTED) {
+    return "READY";
+  }
+  return ota_network_started ? "CONNECTING" : "STARTING";
+#else
+  return "DISABLED";
+#endif
+}
+
+#if COLIBRINO_OTA_CONFIGURED
+void drawOtaState(const char* title, const char* detail, uint16_t color) {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setCursor(4, 8);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(color, TFT_BLACK);
+  M5.Display.println(title);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.println();
+  M5.Display.println(detail);
+}
+
+void lockForOta() {
+  // ArduinoOTA.handle() may own the loop for the entire transfer. Remove every
+  // hardware and host side effect before entering that blocking interval.
+  mouse_armed = false;
+  mouse.release(MOUSE_LEFT);
+  mouse.release(MOUSE_RIGHT);
+  mouse.release(MOUSE_MIDDLE);
+  motion.reset();
+  imu_blink_validated = false;
+  imu_probe_stage = ImuProbeStage::kIdle;
+  probe_imu_blink_detector.reset();
+  runtime_imu_blink_detector.reset();
+  if (ir_powered) {
+    disableIrProbe();
+  } else {
+    M5.Power.setExtOutput(false);
+  }
+  mode = AppMode::kMotionMonitor;
+}
+
+void beginOtaService() {
+  ArduinoOTA.setHostname(kOtaHostname);
+  ArduinoOTA.setPassword(OTA_PASS);
+  ArduinoOTA.onStart([]() {
+    ota_in_progress = true;
+    ota_last_percent = 255;
+    lockForOta();
+    diagnostics.println("EVENT,OTA,START");
+    drawOtaState("OTA UPDATE", "Mouse locked; do not power off", TFT_YELLOW);
+  });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    const uint8_t percent = total == 0 ? 0 : (done * 100U) / total;
+    if (percent == ota_last_percent) {
+      return;
+    }
+    ota_last_percent = percent;
+    M5.Display.fillRect(4, 60, M5.Display.width() - 8, 12, TFT_DARKGREY);
+    const int width =
+        static_cast<int>((M5.Display.width() - 8) * percent / 100U);
+    M5.Display.fillRect(4, 60, width, 12, TFT_GREEN);
+    diagnostics.printf("EVENT,OTA,PROGRESS,%u\n", percent);
+  });
+  ArduinoOTA.onEnd([]() {
+    diagnostics.println("EVENT,OTA,COMPLETE");
+    drawOtaState("OTA COMPLETE", "Restarting", TFT_GREEN);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    ota_in_progress = false;
+    diagnostics.printf("EVENT,OTA,ERROR,%u\n", static_cast<unsigned>(error));
+    drawOtaState("OTA FAILED", "Mouse remains locked", TFT_RED);
+    last_screen_ms = millis();
+  });
+  ArduinoOTA.begin();
+  ota_service_started = true;
+  diagnostics.printf("EVENT,OTA,READY,%s.local,%s\n", kOtaHostname,
+                     WiFi.localIP().toString().c_str());
+}
+
+void startOtaNetworking(uint32_t now_ms) {
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(kOtaHostname);
+  WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  ota_network_started = true;
+  ota_network_started_ms = now_ms;
+  diagnostics.printf("EVENT,OTA,WIFI_CONNECTING,%s\n", kOtaHostname);
+}
+
+void updateOta(uint32_t now_ms) {
+  if (!ota_network_started) {
+    startOtaNetworking(now_ms);
+  }
+  if (WiFi.status() == WL_CONNECTED && !ota_service_started) {
+    beginOtaService();
+  }
+  if (ota_service_started) {
+    ArduinoOTA.handle();
+  } else if (now_ms - ota_network_started_ms >= 30000) {
+    // Remain non-blocking: sensor calibration and the locked UI still work
+    // when the access point is absent. Retry without persisting credentials.
+    WiFi.disconnect(false, false);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    ota_network_started_ms = now_ms;
+    diagnostics.println("EVENT,OTA,WIFI_RETRY");
+  }
+}
+#else
+void startOtaNetworking(uint32_t) {}
+void updateOta(uint32_t) {}
+#endif
+
 void updateIr(uint32_t now_ms) {
   if (!ir_powered) {
     return;
@@ -539,11 +678,11 @@ void logStatus(uint32_t now_ms) {
   }
   last_status_log_ms = now_ms;
   diagnostics.printf(
-      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f\n",
+      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f\n",
       static_cast<unsigned long>(now_ms),
       M5.getBoard() == m5::board_t::board_M5StickS3 ? "StickS3" : "UNKNOWN",
       modeName(mode), mouse_armed, M5.Imu.isEnabled(), motion_calibrated,
-      imu_blink_validated, ir_powered,
+      imu_blink_validated, ir_powered, otaStateName(),
       colibrino::feasibilityStageName(feasibility.stage()),
       imuProbeStageName(imu_probe_stage),
       gyro_dps.x, gyro_dps.y, gyro_dps.z);
@@ -661,6 +800,7 @@ void setup() {
       "CSV: IR,ms,valid,symbols,active_us,total_us,ratio,stage");
   diagnostics.printf("IMU type: %d (BMI270 expected: %d)\n",
                      M5.Imu.getType(), m5::imu_bmi270);
+  startOtaNetworking(millis());
   drawIrScreen(millis());
 }
 
@@ -670,6 +810,13 @@ void loop() {
   // work; motion integration uses sensor timestamps rather than this delay.
   M5.update();
   const uint32_t now_ms = millis();
+  updateOta(now_ms);
+#if COLIBRINO_OTA_CONFIGURED
+  if (ota_in_progress) {
+    delay(1);
+    return;
+  }
+#endif
   handleButtons(now_ms);
   updateImu(now_ms);
   updateIr(now_ms);
