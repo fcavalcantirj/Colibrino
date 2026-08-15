@@ -36,6 +36,22 @@ void ImuBlinkDetector::cancelSequence() {
   previous_sequence_impulse_ms_ = 0;
 }
 
+bool ImuBlinkDetector::intervalMatches(
+    uint32_t interval_ms, uint8_t completed_impulses) const {
+  // Gaps after the first and third impulses complete each double blink. The
+  // gap after the second impulse is intentionally longer, making the gesture
+  // a temporal code rather than four ordinary blinks at a uniform cadence.
+  if (completed_impulses == 1 || completed_impulses == 3) {
+    return interval_ms >= config_.double_blink_minimum_ms &&
+           interval_ms <= config_.double_blink_maximum_ms;
+  }
+  if (completed_impulses == 2) {
+    return interval_ms >= config_.deliberate_pause_minimum_ms &&
+           interval_ms <= config_.deliberate_pause_maximum_ms;
+  }
+  return false;
+}
+
 bool ImuBlinkDetector::update(uint32_t now_ms, const Vec3& gyro_dps) {
   if (!baseline_initialized_) {
     baseline_ = gyro_dps;
@@ -88,12 +104,6 @@ bool ImuBlinkDetector::update(uint32_t now_ms, const Vec3& gyro_dps) {
     click_suppressed_ = false;
   }
 
-  if (sequence_impulses_ > 0 &&
-      now_ms - previous_sequence_impulse_ms_ >
-          config_.sequence_maximum_ms) {
-    sequence_impulses_ = 0;
-  }
-
   if (have_last_impulse_ &&
       now_ms - last_impulse_ms_ < config_.impulse_refractory_ms) {
     return false;
@@ -128,20 +138,21 @@ bool ImuBlinkDetector::update(uint32_t now_ms, const Vec3& gyro_dps) {
   last_impulse_ms_ = now_ms;
   if (sequence_impulses_ > 0) {
     const uint32_t interval_ms = now_ms - previous_sequence_impulse_ms_;
-    if (interval_ms < config_.sequence_minimum_ms ||
-        interval_ms > config_.sequence_maximum_ms) {
-      // The current impulse can still start a new deliberate sequence.
-      sequence_impulses_ = 0;
+    if (!intervalMatches(interval_ms, sequence_impulses_)) {
+      // When a long pause was expected but another short interval arrives,
+      // retain those two newest impulses as a possible first double blink.
+      // Every other mismatch makes the current impulse the new pattern start.
+      sequence_impulses_ =
+          sequence_impulses_ == 2 && intervalMatches(interval_ms, 1) ? 2 : 1;
+      previous_sequence_impulse_ms_ = now_ms;
+      return false;
     }
   }
   ++sequence_impulses_;
   previous_sequence_impulse_ms_ = now_ms;
 
-  // Treat invalid zero/one configurations as a two-impulse minimum. A caller
-  // must never be able to turn ordinary single blinks directly into clicks.
-  const uint8_t required_impulses =
-      std::max<uint8_t>(2, config_.required_impulses);
-  if (sequence_impulses_ < required_impulses) {
+  constexpr uint8_t kRequiredPatternImpulses = 4;
+  if (sequence_impulses_ < kRequiredPatternImpulses) {
     return false;
   }
   sequence_impulses_ = 0;

@@ -326,8 +326,8 @@ void drawMotionScreen(uint32_t now_ms) {
     if (imu_probe_stage == ImuProbeStage::kCaptureStill) {
       M5.Display.println("stay still; blink normally");
     } else if (imu_probe_stage == ImuProbeStage::kCaptureBlinks) {
-      M5.Display.println("4 firm blinks in rhythm");
-      M5.Display.println("~0.6s gaps; pause; repeat");
+      M5.Display.println("blink twice; pause 1 sec");
+      M5.Display.println("blink twice; then repeat");
     } else if (imu_probe_stage == ImuProbeStage::kCaptureHeadMotion) {
       M5.Display.println("look left/right/up/down");
     } else {

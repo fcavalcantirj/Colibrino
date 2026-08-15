@@ -132,29 +132,42 @@ void validateImuBlinkSequence() {
   colibrino::ImuBlinkDetector detector;
   uint32_t now_ms = 0;
   bool emitted = feedImuStill(detector, now_ms, 2100);
-  for (size_t impulse = 0; impulse < 4; ++impulse) {
-    emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
-    if (impulse != 3) {
-      emitted = feedImuStill(detector, now_ms, 500) || emitted;
-    }
-  }
-  check("imu_four_blink_sequence",
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  emitted = feedImuStill(detector, now_ms, 400) || emitted;
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  emitted = feedImuStill(detector, now_ms, 900) || emitted;
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  emitted = feedImuStill(detector, now_ms, 400) || emitted;
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  check("imu_double_pause_double_pattern",
         emitted && detector.completedSequences() == 1);
 
   detector.reset();
   now_ms = 0;
   emitted = feedImuStill(detector, now_ms, 2100);
-  for (size_t impulse = 0; impulse < 3; ++impulse) {
+  for (size_t impulse = 0; impulse < 4; ++impulse) {
     emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
-    emitted = feedImuStill(detector, now_ms, 500) || emitted;
+    if (impulse != 3) {
+      emitted = feedImuStill(detector, now_ms, 400) || emitted;
+    }
   }
+  check("imu_uniform_blinks_rejected",
+        !emitted && detector.completedSequences() == 0);
+
+  detector.reset();
+  now_ms = 0;
+  emitted = feedImuStill(detector, now_ms, 2100);
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  emitted = feedImuStill(detector, now_ms, 400) || emitted;
+  emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
+  emitted = feedImuStill(detector, now_ms, 900) || emitted;
   // Pointer-scale motion cancels all partial state and restarts the two-second
-  // quiet gate. A following pulse must not complete the old sequence.
+  // quiet gate. A following pulse must not complete the old pattern.
   emitted = detector.update(now_ms, {0.0f, 8.0f, 0.0f}) || emitted;
   now_ms += 5;
   emitted = feedImuStill(detector, now_ms, 2100) || emitted;
   emitted = feedImuBlinkImpulse(detector, now_ms) || emitted;
-  check("imu_short_and_motion_sequences_rejected",
+  check("imu_short_and_motion_patterns_rejected",
         !emitted && detector.completedSequences() == 0);
 }
 

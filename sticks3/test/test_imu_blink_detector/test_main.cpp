@@ -37,22 +37,26 @@ void test_stillness_never_emits() {
   TEST_ASSERT_EQUAL_UINT32(0, detector.completedSequences());
 }
 
-void feedSequenceGap(ImuBlinkDetector& detector, uint32_t& now_ms) {
-  feedStill(detector, now_ms, 500);
+void feedDoubleBlinkGap(ImuBlinkDetector& detector, uint32_t& now_ms) {
+  feedStill(detector, now_ms, 400);
 }
 
-void test_four_deliberate_impulses_emit_once() {
+void feedDeliberatePause(ImuBlinkDetector& detector, uint32_t& now_ms) {
+  feedStill(detector, now_ms, 900);
+}
+
+void test_double_pause_double_pattern_emits_once() {
   ImuBlinkDetector detector;
   uint32_t now_ms = 0;
   bool emitted = false;
   // The detector intentionally requires two quiet seconds after reset.
   feedStill(detector, now_ms, 2100);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
+  feedDoubleBlinkGap(detector, now_ms);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
+  feedDeliberatePause(detector, now_ms);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
+  feedDoubleBlinkGap(detector, now_ms);
   feedImpulse(detector, now_ms, emitted);
 
   TEST_ASSERT_TRUE(emitted);
@@ -60,17 +64,31 @@ void test_four_deliberate_impulses_emit_once() {
   TEST_ASSERT_EQUAL_UINT32(1, detector.completedSequences());
 }
 
-void test_three_impulses_and_slow_sequence_do_not_emit() {
+void test_uniform_four_blinks_do_not_emit() {
+  ImuBlinkDetector detector;
+  uint32_t now_ms = 0;
+  bool emitted = false;
+  feedStill(detector, now_ms, 2100);
+  for (int blink = 0; blink < 4; ++blink) {
+    feedImpulse(detector, now_ms, emitted);
+    if (blink != 3) {
+      feedDoubleBlinkGap(detector, now_ms);
+    }
+  }
+
+  TEST_ASSERT_FALSE(emitted);
+  TEST_ASSERT_EQUAL_UINT32(0, detector.completedSequences());
+}
+
+void test_three_pattern_impulses_do_not_emit() {
   ImuBlinkDetector detector;
   uint32_t now_ms = 0;
   bool emitted = false;
   feedStill(detector, now_ms, 2100);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
+  feedDoubleBlinkGap(detector, now_ms);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
-  feedImpulse(detector, now_ms, emitted);
-  feedStill(detector, now_ms, 1300);
+  feedDeliberatePause(detector, now_ms);
   feedImpulse(detector, now_ms, emitted);
 
   TEST_ASSERT_FALSE(emitted);
@@ -83,11 +101,9 @@ void test_head_motion_cancels_partial_sequence() {
   bool emitted = false;
   feedStill(detector, now_ms, 2100);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
+  feedDoubleBlinkGap(detector, now_ms);
   feedImpulse(detector, now_ms, emitted);
-  feedSequenceGap(detector, now_ms);
-  feedImpulse(detector, now_ms, emitted);
-  feedStill(detector, now_ms, 300);
+  feedDeliberatePause(detector, now_ms);
 
   // Pointer-scale rotation exceeds the 2.5 dps safety gate.
   TEST_ASSERT_FALSE(detector.update(now_ms, {0.0f, 8.0f, 0.0f}));
@@ -104,8 +120,9 @@ void test_head_motion_cancels_partial_sequence() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_stillness_never_emits);
-  RUN_TEST(test_four_deliberate_impulses_emit_once);
-  RUN_TEST(test_three_impulses_and_slow_sequence_do_not_emit);
+  RUN_TEST(test_double_pause_double_pattern_emits_once);
+  RUN_TEST(test_uniform_four_blinks_do_not_emit);
+  RUN_TEST(test_three_pattern_impulses_do_not_emit);
   RUN_TEST(test_head_motion_cancels_partial_sequence);
   return UNITY_END();
 }
