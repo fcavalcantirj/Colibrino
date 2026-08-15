@@ -39,12 +39,13 @@ tests did not produce separable eyelid data, and M5Stack specifies at least
 30 cm between its transmitter and receiver. The source retains the diagnostic
 probe, but onboard IR is not recommended as a near-eye click path.
 
-The current no-purchase experiment instead recognizes a deliberate four-blink
-rhythm from tiny BMI270 motion transferred through firmly mounted glasses. It
-requires two seconds without pointer-scale rotation, rejects shorter sequences,
-and must produce at least two intended sequences with zero events during normal
-blinking and head motion before clicking becomes available. It has not yet met
-that complete hardware gate.
+The current no-purchase experiment instead recognizes a deliberate coded blink
+rhythm from tiny BMI270 motion transferred through firmly mounted glasses: two
+firm blinks, a one-second pause, then two more. It requires two seconds without
+pointer-scale rotation, rejects ordinary evenly spaced blinking, and must
+produce at least two intended patterns with zero events during normal blinking
+and head motion before clicking becomes available. It has not yet met that
+complete hardware gate.
 
 Authenticated Wi-Fi OTA is now part of the StickS3 application whenever its
 ignored local secrets header is present. It deliberately reuses the tested
@@ -60,7 +61,7 @@ flowchart LR
     Cal --> Motion[Filtered motion controller]
     Motion --> Lock{Mouse physically armed?}
     Lock -->|yes| HID[USB HID movement]
-    BMI270 --> Gesture[Four-blink IMU sequence]
+    BMI270 --> Gesture[Double-pause-double IMU pattern]
     Gesture --> Safety[Stillness and control-stage gate]
     Safety -->|passed this boot| Click[USB HID click]
     Safety -->|not proven| Disabled[Clicks disabled]
@@ -113,18 +114,20 @@ timing, USB, or mounting geometry still require another physical regression run.
 
 ## Current click-sensor decision
 
-Two high-rate glasses-mounted captures now provide the tuning corpus. The first
-contains three recognizable deliberate four-blink sequences and no still/head
-events. The second, deliberately harder run contains no events in ordinary
-blinking or head motion after conservative offline retuning, but only one
-recognized intentional sequence. Because the firmware requires two, the result
-correctly remains `NOT_PROVEN` and cannot click.
+Three retained high-rate logs now include the original tuning sessions and five
+new glasses-mounted guided runs. The evenly spaced four-blink detector found an
+intentional sequence in two new runs but also reported a sequence during three
+still controls. It is therefore rejected as unsafe even though head movement
+was consistently rejected. A parameter search found no useful fixed-threshold
+setting that retained all intended runs while removing every control event.
 
-Repeat the guided IMU test on the fixed mount before buying anything. If the
-four-blink gesture cannot repeatedly pass without control-stage events, add an
-analog reflectance sensor such as the TCRT5000 through the existing
-sensor-neutral input boundary. The integrated IR pair itself is no longer the
-recommended alternative.
+The current firmware instead requires a double blink, a roughly one-second
+pause, and a second double blink. It rejects evenly spaced blinking in native
+and Wokwi tests. It replays every retained still/head control with zero
+sequences; the new pattern still requires a fresh worn test. If it cannot pass
+without control-stage events, add an analog reflectance sensor such as the
+TCRT5000 through the existing sensor-neutral input boundary. The integrated IR
+pair itself is no longer the recommended alternative.
 
 ## Legacy build
 

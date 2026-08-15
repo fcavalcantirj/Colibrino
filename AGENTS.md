@@ -33,9 +33,18 @@ experimental onboard-IR feasibility probe. It is a clean successor rather than
 a source-compatible port of the AVR sketch.
 
 The StickS3 software is implemented, committed, native-tested, Wokwi-tested,
-and compiled without upload. Physical StickS3 behavior remains unverified. The
-device currently in service is protected and must not be flashed. Wait for the
-fresh unit and explicit target-port identification before uploading.
+and physically exercised. Composite USB, BMI270 calibration, controls, pointer
+movement, fail-closed HID, and authenticated OTA are verified on the explicitly
+identified unit with MAC `AC:27:6E:D2:68:B8`. Its original 8 MB PTT image is
+preserved under ignored `.device-backups/`. Never target the separate
+`bedside-countdown-s3`; OTA must retain its hostname plus ARP-MAC guard.
+
+The former evenly spaced four-blink IMU cadence is rejected. Five new worn runs
+produced three still-control sequences and only two intentional sequences. The
+current build instead requires double blink, 0.8-1.4 second pause, double blink
+at a 1.1 dps residual entry threshold. Retained still/head captures replay with
+zero events, but this new pattern remains hardware-unverified and click output
+therefore remains gated off until a fresh current-boot probe passes.
 
 `sticks3/PORT_PLAN.json` is the machine-readable source of truth for validated
 facts, task status, simulation boundaries, and the TCRT5000 purchase decision.
@@ -67,6 +76,11 @@ analysis, a polarity-independent hysteretic blink detector, human-duration and
 refractory gates, and the guided feasibility state machine. It has no hardware
 dependency.
 
+`imu_blink_detector.*` contains the allocation-free double-pause-double timing
+pattern, impulse duration gates, pointer-scale motion cancellation, and quiet
+and click refractory periods. Do not reduce it to evenly spaced impulses; the
+live control data disproves that design.
+
 `sticks3/src/sim_main.cpp` is deterministic validation firmware, not production
 application code. The Wokwi environment compiles it together with the actual
 portable production sources and excludes `main.cpp` and `ir_probe.cpp`.
@@ -87,15 +101,18 @@ In IR mode, holding the large blue button for two seconds toggles the controlled
 IR power rail. When IR is powered, tapping it starts or repeats the guided
 open-eye, closed-eye, and blink sequence.
 
-Blink-generated clicks require all of the following in the current boot: valid
-IR samples, a passed guided feasibility session, mouse mode, and physically
-armed output. Do not persist this pass across boots without a separately
-approved calibration-integrity design.
+IMU blink-generated clicks require a passed still/pattern/head guided session,
+mouse mode, and physically armed output in the current boot. The alternative
+optical path requires valid powered IR samples and its own guided feasibility
+pass. Do not persist either pass across boots without a separately approved
+calibration-integrity design.
 
 ## Hardware safety invariants
 
-Never upload unless the user explicitly identifies the fresh device and serial
-port. Builds, tests, monitors, and simulations do not authorize upload.
+Never upload unless the user explicitly identifies the device and authorizes
+deployment. USB uploads require the resolved serial port and hardware identity;
+OTA requires `sticks3-ptt.local` plus the saved MAC. Builds, tests, monitors,
+and simulations do not authorize upload by themselves.
 
 StickS3 IR power uses the M5PM1-controlled EXT_5V rail. Never call
 `M5.Power.setExtOutput(true)` while another supply drives EXT_5V, Grove power,
@@ -154,19 +171,22 @@ On this workstation PlatformIO may be available only at:
 /Users/fcavalcanti/.platformio/penv/bin/platformio
 ```
 
-The native suite currently contains eight Unity cases covering stationary
+The native suite currently contains thirteen Unity cases covering stationary
 calibration, motion rejection, pointer deadzone and accumulation, signal
-separation acceptance/rejection, blink duration, and the guided protocol.
+separation acceptance/rejection, optical blink duration, the guided optical
+protocol, the coded IMU pattern, uniform-pattern rejection, incomplete-pattern
+rejection, and head-motion cancellation.
 
 The no-upload production build currently uses `espressif32@6.12.0`,
-Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The last verified image
-used 35,064 bytes of reported RAM and 575,733 bytes of the application flash
+Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The last verified OTA
+image used 65,180 bytes of reported RAM and 1,048,465 bytes of application flash
 partition. Treat sizes as observations, not permanent acceptance thresholds.
 
 The Wokwi wrapper loads `WOKWI_CLI_TOKEN` from the process or the ignored
 repository-root `.env`. `PLATFORMIO_CLI_BIN` and `WOKWI_CLI_BIN` override CLI
 locations. Never print, stage, or commit the token. Success requires
-`COLIBRINO_SIM_PASS`; generated `.pio/` contents remain ignored.
+`COLIBRINO_SIM_PASS`; the current gate emits eleven passing checks. Generated
+`.pio/` contents remain ignored.
 
 ## Simulator truth
 

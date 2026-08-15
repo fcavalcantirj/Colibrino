@@ -13,15 +13,23 @@ are verified. Click sensing remains experimental and fails closed.
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Portable motion and blink logic | Passing | Twelve native Unity tests |
-| Generic ESP32-S3 execution | Passing | Wokwi CLI boots the cross-compiled image and reports ten checks plus `COLIBRINO_SIM_PASS` |
+| Portable motion and blink logic | Passing | Thirteen native Unity tests |
+| Generic ESP32-S3 execution | Passing | Wokwi CLI boots the cross-compiled image and reports eleven checks plus `COLIBRINO_SIM_PASS` |
 | Production firmware build | Passing | Pinned PlatformIO environment links composite CDC/HID firmware |
 | StickS3 display, buttons, and BMI270 | Passing on tested unit | BMI270 detected and calibrated; large blue Button A and status display exercised |
 | Native USB and head pointer | Passing on tested unit | Composite CDC/HID enumerated; stationary armed control emitted no reports; worn head motion moved the cursor |
-| Authenticated OTA | Passing on tested unit | One cable bootstrap plus two authenticated round trips passed at `sticks3-ptt.local`; every reboot returned locked and calibrated |
+| Authenticated OTA | Passing on tested unit | One cable bootstrap and three authenticated uploads passed at `sticks3-ptt.local`; the first two round trips returned locked and calibrated |
 | Onboard IR eyelid response | Rejected for near-eye use | Guided tests were inseparable; M5Stack specifies at least 30 cm TX/RX spacing |
-| IMU blink gesture | Pending repeat hardware gate | Two captures tune a four-blink sequence; the harder capture remains `NOT_PROVEN` |
+| IMU blink gesture | Pending new-pattern hardware gate | Even four-blink timing produced still-control events; double-pause-double replays retained controls cleanly but is not yet worn-tested |
 | Need for external TCRT5000 | Deferred | Buy only if repeat IMU validation remains unusable or unsafe |
+
+Five new worn guided runs rejected every head-motion control, but the former
+evenly spaced four-blink detector produced three still-control sequences while
+recognizing only two intentional sequences. That cadence is unsafe and no
+longer accepted. The replacement raises the impulse entry threshold and treats
+the four blinks as a temporal code: short gap, 0.8-1.4 second pause, short gap.
+Every retained still/head capture replays with zero sequences under this build;
+a new worn run must still prove that the intentional code is usable twice.
 
 ## Architecture
 
@@ -45,7 +53,7 @@ flowchart TD
 
 Board-specific M5Unified, RMT, power, display, button, and USB code stays in
 `src/main.cpp` and `src/ir_probe.*`. Motion, optical classification, and the
-IMU sequence detector under `include/colibrino/` and their matching sources are
+IMU pattern detector under `include/colibrino/` and their matching sources are
 hardware-independent. `tools/replay_imu_capture.cpp` runs captured device CSV
 through the exact production detector.
 
@@ -99,7 +107,10 @@ or replace USB CDC diagnostics. The one-time cable bootstrap was completed on
 2026-08-15. Two subsequent authenticated round trips succeeded, each resolving
 to MAC `AC:27:6E:D2:68:B8`; after each reboot CDC reported HID locked, external
 IR off, BMI270 calibrated, blink clicks disabled, and OTA ready. Subsequent
-Colibrino builds can use OTA while the device is awake and on the same LAN.
+Colibrino builds can use OTA while the device is awake and on the same LAN. A
+third authenticated upload installed the double-pause-double build; its upload
+completed before USB was disconnected, while another CDC post-reboot check
+remains pending.
 
 ## Wokwi simulator gate
 
@@ -107,8 +118,9 @@ Wokwi uses a generic ESP32-S3 DevKitC rather than a complete StickS3 model. The
 harness executes the production portable sources and verifies stationary gyro
 calibration, moving-calibration rejection, pointer deadzone, direction and
 fractional accumulation, invalid-timestep rejection, signal separation, blink
-duration and refractory timing, the four-blink IMU gesture, motion cancellation,
-and the guided feasibility state machine.
+duration and refractory timing, the double-pause-double IMU pattern, rejection
+of uniform blinking, motion cancellation, and the guided feasibility state
+machine.
 
 Install the Wokwi CLI and place the credential in the ignored repository-root
 `.env`:
@@ -160,8 +172,9 @@ The firmware fails closed:
    is selected, and button A is held for two seconds.
 3. IMU blink clicks remain disabled unless the current mount passes stillness,
    deliberate-sequence, and head-motion controls during the current boot.
-4. The detector requires four rhythmic impulses, rejects one through three,
-   and waits two quiet seconds after any pointer-scale head rotation.
+4. The detector requires double blink, 0.8-1.4 second pause, double blink;
+   rejects uniformly spaced blinking; and waits two quiet seconds after any
+   pointer-scale head rotation.
 5. Invalid IMU timing produces no pointer delta.
 6. IR initialization failure immediately disables the external 5 V output.
 
@@ -246,8 +259,8 @@ For the IMU click gate, mount the device firmly in its intended position. Tap
 Button A from motion mode, then follow all three measured stages:
 
 1. Keep the head still and blink normally. Any sequence is a failed control.
-2. Perform at least two groups of four firm blinks. Keep roughly 0.6 seconds
-   between blinks and pause between groups.
+2. Perform this coded pattern twice: two firm blinks close together, wait about
+   one second, then two firm blinks close together. Pause before repeating.
 3. Move the head left, right, up, and down as in normal pointer use. Any
    sequence is a failed control.
 4. Accept `PASS` only with zero still events, at least two deliberate events,
@@ -273,8 +286,8 @@ mount. Do not assume the source defaults match the physical orientation.
 ## TCRT5000 decision
 
 Do not buy a TCRT5000 solely because the onboard IR pair failed: the no-extra-
-hardware IMU sequence still deserves repeat validation. Add an analog
-reflectance adapter when the four-blink gesture cannot pass consistently, is
+hardware IMU pattern still deserves one focused repeat validation. Add an analog
+reflectance adapter when the coded gesture cannot pass consistently, is
 too tiring, or produces any control-stage event after conservative tuning. The
 `BlinkInput` interface already isolates the sensor producer, so an external
 adapter does not require rewriting motion control or USB behavior. Electrical
@@ -289,7 +302,7 @@ design before connection.
 | `src/ir_probe.*` | Arduino-ESP32 2.x/3.x RMT transmit and receive adapter |
 | `include/colibrino/blink_input.h` | Sensor-neutral normalized blink sample contract |
 | `include/colibrino/config.h` | Board pins and tunable motion/IR constants |
-| `include/colibrino/imu_blink_detector.h`, `src/imu_blink_detector.cpp` | Allocation-free four-impulse sequence and head-motion safety gates |
+| `include/colibrino/imu_blink_detector.h`, `src/imu_blink_detector.cpp` | Allocation-free double-pause-double pattern and head-motion safety gates |
 | `include/colibrino/motion_controller.h`, `src/motion_controller.cpp` | Stationary bias estimation and bounded relative-pointer mapping |
 | `include/colibrino/signal_analysis.h`, `src/signal_analysis.cpp` | Streaming statistics, calibration gates, blink detector, and guided protocol |
 | `test/` | Native Unity regression tests |
@@ -305,7 +318,7 @@ design before connection.
 A software-only change is ready to hand off when native tests pass, the
 production image builds without upload, the Wokwi gate passes when portable
 logic changed, `PORT_PLAN.json` remains valid JSON, generated files and secrets
-remain untracked, both retained IMU captures are replayed after detector tuning,
+remain untracked, every retained IMU log is replayed after detector tuning,
 and every hardware-dependent claim is still labeled as such. Never send a
 credential-bearing production image to Wokwi; its simulator environment builds
 only the portable `sim_main.cpp` image and must remain isolated from the ignored
