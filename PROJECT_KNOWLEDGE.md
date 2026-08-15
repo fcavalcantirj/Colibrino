@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-15T18:07:48Z — HEAD 298c7c0
+
+Bootstrapped the OTA-enabled Colibrino image over the explicitly matched USB ROM port for MAC `AC:27:6E:D2:68:B8`, then completed two authenticated OTA round trips through `sticks3-ptt.local`. After each reboot the same MAC returned and CDC confirmed HID locked, external IR off, BMI270 calibrated, blink clicking disabled, and OTA ready; the separate `bedside-countdown-s3` remained untouched. Updated the operating guides and structured plan from pending bootstrap to hardware-validated OTA.
+
 ## 2026-08-15T16:20:19Z — HEAD 59ffaab
 
 Distinguished the tested Colibrino StickS3 from the separate live `bedside-countdown-s3`, recovered the tested unit's original `sticks3-ptt` authenticated ArduinoOTA workflow, and carried that capability into Colibrino behind ignored credentials. Added fail-closed OTA callbacks, a hostname plus saved-MAC upload guard, documentation and structured acceptance criteria, then passed all twelve native tests and the OTA-enabled production build while confirming the local simulator artifact contains no Wi-Fi or OTA credential strings. The installed older Colibrino image still needs one cable bootstrap before later updates can use OTA.
@@ -34,7 +38,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The last fully analyzed source commit is `59ffaab1b19d283f3859c4695dcc2b389f9d8763`. It contains the physically exercised StickS3 firmware, conservative IMU blink classifier, authenticated OTA preservation, MAC-guarded uploader, capture replay tool, native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
+The last fully analyzed source commit is `298c7c0409cc6451135204da71bdfd23178db8c7`. It contains the physically exercised StickS3 firmware, conservative IMU blink classifier, hardware-validated authenticated OTA, MAC-guarded uploader, capture replay tool, native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
 
 ### Repository lineage
 
@@ -58,7 +62,7 @@ The README explicitly targets people with physical and motor disabilities includ
 
 The active target is an Arduino Leonardo or ATmega32U4 Pro Micro connected to a computer over USB. The microcontroller runs continuously as a USB HID mouse; there is no server, desktop application, worker, cron job, or cloud component.
 
-A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is a standalone wired USB HID mouse with composite USB CDC for commands and diagnostic CSV, plus optional authenticated Wi-Fi OTA when an ignored device header is present. Physical testing confirmed USB enumeration, BMI270 calibration, fail-closed arming, stationary suppression, and head-controlled cursor motion. It starts with movement locked and requires the large blue Button A to advance guided tests or arm the pointer. Blink clicks remain disabled unless the current boot passes its guided IMU validation. The tested device currently holds the earlier safe test image whose validation failed closed rather than the latest four-blink and OTA build; because that installed image lacks an OTA listener, one cable bootstrap remains unavoidable.
+A committed successor prototype exists under `sticks3/` for the M5Stack StickS3. It is a standalone wired USB HID mouse with composite USB CDC for commands and diagnostic CSV, plus optional authenticated Wi-Fi OTA when an ignored device header is present. Physical testing confirmed USB enumeration, BMI270 calibration, fail-closed arming, stationary suppression, head-controlled cursor motion, and two OTA round trips. It starts with movement locked and requires the large blue Button A to advance guided tests or arm the pointer. Blink clicks remain disabled unless the current boot passes its guided IMU validation. The tested device now holds the latest four-blink and OTA build, advertises `sticks3-ptt.local` while awake, and remains connected by USB after validation.
 
 The user firmware present before Colibrino testing was captured as an ignored 8 MB flash image at `sticks3/.device-backups/sticks3-ac276ed268b8-pre-colibrino-20260815T014627Z.bin`. Its SHA-256 is `712cd6797ff0b77bfda8674b0aaaee93bc187cc64000fc8c0135374f8e031f65`. Preserve this backup and restore it after the remaining hardware experiment when the user requests their working project back.
 
@@ -205,6 +209,8 @@ The legacy target has no unit tests, hardware-in-the-loop tests, static-analysis
 The StickS3 tree also has a Wokwi CLI gate using the generic `board-esp32-s3-devkitc-1` model. It cross-compiles the production motion, optical analysis, and IMU blink-classifier sources and runs ten deterministic firmware-side checks. The original eight motion and optical checks remain, and two checks cover a valid four-impulse IMU rhythm plus rejection of short and motion-contaminated sequences. The 2026-08-15 run passed and printed `COLIBRINO_SIM_PASS`. Assumption: Wokwi's generic ESP32-S3 CPU and Arduino execution are representative for portable logic only; they are not evidence for StickS3 peripherals or near-eye sensing.
 
 The StickS3 firmware compiled successfully after the OTA safety changes using PlatformIO `espressif32@6.12.0`, Arduino-ESP32 2.0.17, M5Unified 0.2.19, M5GFX 0.2.26, and the core-bundled WiFi, ESPmDNS, Update, and ArduinoOTA libraries. With the ignored local OTA configuration present, the composite CDC, HID, and OTA image used 65,172 bytes of reported RAM and 1,048,377 bytes of the application flash partition. All twelve native tests passed. The credential-free generic Wokwi image built locally and contained none of the configured Wi-Fi SSID, Wi-Fi password, or OTA password strings. The external Wokwi run was not repeated after this app-layer-only change to avoid sending a credential-bearing production artifact; the ten-check portable logic result from earlier the same day remains applicable because no portable source changed.
+
+Physical deployment on 2026-08-15 used `/dev/cu.usbmodem1101`, whose ROM descriptor and esptool both reported MAC `AC:27:6E:D2:68:B8`. The cable bootstrap wrote and hash-verified the image. Two subsequent invocations of the authenticated uploader resolved `sticks3-ptt.local` to `192.168.0.194`, verified the same ARP MAC, authenticated, uploaded, rebooted, and returned the OTA service. CDC after both reboots reported `armed=0`, `ir=0`, `calibrated=1`, `imu_blink=0`, and `ota=READY`.
 
 # Configuration
 
@@ -516,9 +522,9 @@ The replay evidence proves conservative separation for the recorded controls, no
 
 The original 8 MB device image is backed up and ignored correctly, but has not been restored because one final hardware validation remains. After that experiment, restore the captured image and verify normal boot before returning the user's working StickS3 project. The exact application-level acceptance signal after restoration is user-specific and remains to be confirmed at that time.
 
-### OTA bootstrap and round trip
+### OTA and motion coexistence
 
-The OTA-enabled Colibrino image has compiled but has not run on hardware. The installed older Colibrino test image does not join Wi-Fi or advertise ArduinoOTA, so being powered on is not equivalent to being network-reachable. One USB flash must bootstrap the new listener. Before relying on it, verify that the correct MAC advertises `sticks3-ptt.local`, complete two authenticated OTA round trips, confirm every update locks HID and external power, and check that Wi-Fi background activity does not degrade BMI270 motion timing or stationary suppression.
+The cable bootstrap and two authenticated OTA round trips are complete, including post-reboot fail-closed state checks. A longer worn regression is still needed to confirm that continuous Wi-Fi background service does not perceptibly degrade BMI270 pointer timing, stationary suppression, or the conservative four-blink validation. OTA transfer itself must continue to own a locked, off-face maintenance state.
 
 ### Transport priority
 
