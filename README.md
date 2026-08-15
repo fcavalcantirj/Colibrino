@@ -50,9 +50,9 @@ Authenticated Wi-Fi OTA is now part of the StickS3 application whenever its
 ignored local secrets header is present. It deliberately reuses the tested
 unit's established `sticks3-ptt.local` identity, locks HID and external IR power
 before accepting an update, and refuses the uploader when the resolved MAC does
-not match the saved Colibrino StickS3. The currently installed older Colibrino
-test image has no OTA listener, so one cable bootstrap is still required; later
-firmware iterations can be delivered over Wi-Fi.
+not match the saved Colibrino StickS3. The one-time cable bootstrap and two
+authenticated OTA round trips now pass on hardware, so later firmware
+iterations can be delivered over Wi-Fi while the unit is awake.
 
 ```mermaid
 flowchart LR
@@ -78,7 +78,7 @@ platformio test -e native
 platformio run -e m5stack-sticks3
 ```
 
-After the one-time OTA bootstrap, an authenticated update is:
+The tested unit is bootstrapped; an authenticated update is:
 
 ```sh
 ./scripts/upload_ota.sh

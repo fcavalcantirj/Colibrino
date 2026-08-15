@@ -18,7 +18,7 @@ are verified. Click sensing remains experimental and fails closed.
 | Production firmware build | Passing | Pinned PlatformIO environment links composite CDC/HID firmware |
 | StickS3 display, buttons, and BMI270 | Passing on tested unit | BMI270 detected and calibrated; large blue Button A and status display exercised |
 | Native USB and head pointer | Passing on tested unit | Composite CDC/HID enumerated; stationary armed control emitted no reports; worn head motion moved the cursor |
-| Authenticated OTA | Build-validated; one-time bootstrap pending | Reuses the original `sticks3-ptt.local` identity and password; uploader verifies the saved hardware MAC before transfer |
+| Authenticated OTA | Passing on tested unit | One cable bootstrap plus two authenticated round trips passed at `sticks3-ptt.local`; every reboot returned locked and calibrated |
 | Onboard IR eyelid response | Rejected for near-eye use | Guided tests were inseparable; M5Stack specifies at least 30 cm TX/RX spacing |
 | IMU blink gesture | Pending repeat hardware gate | Two captures tune a four-blink sequence; the harder capture remains `NOT_PROVEN` |
 | Need for external TCRT5000 | Deferred | Buy only if repeat IMU validation remains unusable or unsafe |
@@ -95,9 +95,10 @@ Espressif's authenticated OTA tool:
 
 The wrapper explicitly refuses a different S3 such as
 `bedside-countdown-s3`. OTA updates firmware; they do not provide wireless HID
-or replace USB CDC diagnostics. The older Colibrino image currently on the
-tested unit predates this listener, so it requires one final cable flash. Once
-this image is installed and verified at `sticks3-ptt.local`, subsequent
+or replace USB CDC diagnostics. The one-time cable bootstrap was completed on
+2026-08-15. Two subsequent authenticated round trips succeeded, each resolving
+to MAC `AC:27:6E:D2:68:B8`; after each reboot CDC reported HID locked, external
+IR off, BMI270 calibrated, blink clicks disabled, and OTA ready. Subsequent
 Colibrino builds can use OTA while the device is awake and on the same LAN.
 
 ## Wokwi simulator gate

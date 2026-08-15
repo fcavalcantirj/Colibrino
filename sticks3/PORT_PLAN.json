@@ -138,14 +138,14 @@
     {
       "id": "T8",
       "name": "Authenticated StickS3 OTA",
-      "status": "implemented_build_validated_pending_one_time_bootstrap",
+      "status": "implemented_and_hardware_validated",
       "acceptance": [
         "Wi-Fi and ArduinoOTA compile only when the ignored device secrets header is available.",
         "The service reuses the tested unit's established sticks3-ptt.local identity and authenticated password.",
         "OTA start locks HID, releases mouse buttons, invalidates blink validation, cancels capture, and disables external 5 V before transfer.",
         "The upload wrapper refuses any resolved device whose ARP MAC differs from AC:27:6E:D2:68:B8.",
-        "One cable flash installs the listener because the currently installed older Colibrino image has no OTA service.",
-        "After bootstrap, two authenticated OTA round trips succeed while the bedside-countdown-s3 remains untouched."
+        "One cable flash installed the listener on the explicitly matched AC:27:6E:D2:68:B8 ROM download port.",
+        "After bootstrap, two authenticated OTA round trips succeeded; each reboot returned with HID locked, IR off, BMI270 calibrated, blink clicks disabled, and OTA ready while bedside-countdown-s3 remained untouched."
       ]
     }
   ],
@@ -188,7 +188,6 @@
     "Does the four-blink BMI270 gesture remain separable after repeated removal and remounting of the glasses?",
     "Is a four-blink click usable enough for the intended user, or only a proof that no external sensor is electrically required?",
     "If an external analog sensor is needed, which expansion pins, supply rail, resistor values, and mechanical position meet electrical and eye-safety constraints?",
-    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?",
-    "Does the first cable-bootstrap build advertise authenticated OTA as sticks3-ptt.local and complete two guarded round trips without affecting USB HID timing?"
+    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?"
   ]
 }
