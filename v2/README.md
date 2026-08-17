@@ -28,6 +28,14 @@ ctest --test-dir build-host -L arbiter      # one unit in isolation
 ctest --test-dir build-host -R blink_dsp    # by name pattern
 ```
 
+Test inventory (ctest names): `contracts_static`, `contracts_cxx`,
+`arbiter_negative`, `arbiter_positive`, `arbiter_property`,
+`arbiter_rollover`, `wire_codec`, `profile_validate`, `fixtures_manifest`,
+`blink_dsp_synth`, `blink_code_synth`, `blink_pipeline_synth`,
+`blink_differential` (C++17, links `../sticks3/src/imu_blink_detector.cpp`),
+`blink_dsp_golden`, `blink_code_golden` (skip 77 / oracle fail without
+fixtures).
+
 Toolchain: CMake >= 3.23, C11 (`C_EXTENSIONS OFF`), C++17 only for the two
 test targets that consume the headers from C++. Flags on every first-party
 target: `-Wall -Wextra -Werror -Wpedantic -Wshadow -Wconversion
@@ -47,14 +55,19 @@ core/include/colibrino/v2/   public contracts (C11, extern "C", no globals,
   access_intent.h intent event / context / config / state / action / faults
   profile.h       persisted profile blob (CRC32 = corruption detection only)
   wire.h          explicit little-endian codec for header + every event
-  blink_dsp.h     blink-dsp event contract (IMPULSE / CANCEL)
-  blink_code.h    blink-code event contract (CLICK_CANDIDATE)
+  blink_dsp.h     blink-dsp: stage 0 IMU residual channel + stage 1 impulse
+                  detector (IMPULSE / CANCEL, never a click)
+  blink_code.h    blink-code: double . pause . double -> CLICK_CANDIDATE
+  blink_pipeline.h dsp -> code facade, blink_detect(window, n, state)
   imu_motion.h    contract-only this round (types + prototypes)
   feel_defaults.h ALL tuning constants — DENYLISTED, human-owned
 core/contracts.c  _Static_assert of every size/offset in the contracts
 core/intent/      arbiter.c
 core/profile/     loader.c, crc32.c
 core/wire/        codec.c (+ internal le_bytes.h)
+core/blink_dsp/   channel_imu.c (stage 0), impulse.c (stage 1)
+core/blink_code/  code.c
+core/blink_pipeline/ pipeline.c
 test/             Unity oracle suite (one executable = one ctest test, LABELS)
 traces/           promoted fixtures: NAME.csv + NAME.labels.json +
                   NAME.labels.tsv, all hashed in MANIFEST.sha256
@@ -70,8 +83,9 @@ cmake/            warnings, optional clang-tidy, manifest checker
 | access-intent | `cv2_intent_arbitrate` | the ONLY path from an intent event to a host action; every fault → `kind NONE`, `release_all 1`, exact fault id |
 | profile | `cv2_profile_load` | decode field-by-field, validate everything, publish atomically |
 | wire | `cv2_*_encode/decode` | fixed sizes, versioned header, no raw struct copies, no partial writes |
-| blink-dsp | (next commit) | ends at impulse events, never a click |
-| blink-code | (next commit) | the click authority: double · pause · double, refractory |
+| blink-dsp | `cv2_blink_dsp_update` (`cv2_blink_channel_imu_update` -> `cv2_blink_dsp_step`) | ends at impulse events (`IMPULSE` / `CANCEL`), never a click; head gate + 2 s quiet gate; external hold for the consumer's refractory |
+| blink-code | `cv2_blink_code_step` | the click authority: double (300–700) · pause (800–1400) · double, 1500 ms click refractory; owns the gesture definition |
+| blink-pipeline | `cv2_blink_pipeline_step` / `blink_detect` | composes dsp -> code and wires the click refractory into the dsp hold; reproduces the sticks3 `ImuBlinkDetector` sample for sample (`blink_differential`) |
 | imu-motion | contract only | implementation deferred; differential vs sticks3 `MotionController` planned |
 
 ## Evidence labels

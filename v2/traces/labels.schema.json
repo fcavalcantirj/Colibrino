@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "colibrino-v2-labels/1",
+  "title": "Colibrino v2 trace labels",
+  "description": "Canonical labels for one promoted trace fixture (NAME.labels.json). The C golden tests read the derived NAME.labels.tsv; both files are hashed in MANIFEST.sha256. No personal identifiers: device milliseconds only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "trace", "run_kind", "mount", "labeler", "segments"],
+  "properties": {
+    "schema": { "const": "colibrino-v2-labels/1" },
+    "trace": { "type": "string", "pattern": "^[A-Za-z0-9._-]+\\.csv$" },
+    "run_kind": { "enum": ["guided_probe", "free_run"] },
+    "mount": { "enum": ["worn", "bench", "handheld"] },
+    "labeler": { "enum": ["host_cue", "human", "tool"] },
+    "firmware": { "type": "string", "description": "sticks3 git revision that produced the stream" },
+    "notes": { "type": "string" },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "stage", "start_ms", "end_ms", "expect_source", "expect"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,23}$" },
+          "kind": {
+            "enum": ["rest", "head_sweep", "hard_blink", "soft_blink", "confounder", "coded_group", "uniform_four", "other"]
+          },
+          "stage": { "enum": ["KEEP_HEAD_STILL", "BLINK_FIRMLY", "MOVE_HEAD", "NONE"] },
+          "start_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "end_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "expect_source": { "enum": ["cue_window", "human_refined", "operator_marker", "derived"] },
+          "expect": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "impulses": { "type": ["integer", "null"], "minimum": 0, "description": "blink-dsp IMPULSE count in the window; null = unconstrained ('*' in the tsv)" },
+              "clicks": { "type": ["integer", "null"], "minimum": 0, "description": "blink-code CLICK_CANDIDATE count in the window; null = unconstrained" }
+            }
+          },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -42,3 +42,31 @@ add_test(NAME fixtures_manifest
   COMMAND ${CMAKE_COMMAND} -DTRACES_DIR=${CMAKE_SOURCE_DIR}/traces
           -P ${CMAKE_SOURCE_DIR}/cmake/check_manifest.cmake)
 set_tests_properties(fixtures_manifest PROPERTIES LABELS "fixtures;golden")
+
+# ---- blink pipeline: differential vs the sticks3 v1 detector --------------
+# Links the production v1 translation unit unchanged; both TUs get
+# -ffp-contract=off via cv2_warnings so float results are comparable bit for
+# bit. Vec3 comes from the header-only part of motion_controller.h; the
+# motion controller itself is NOT linked.
+set(CV2_STICKS3_DIR ${CMAKE_SOURCE_DIR}/../sticks3)
+cv2_add_test(blink_differential CXX LABELS "blink;blink_pipeline;differential"
+  SOURCES ${CV2_STICKS3_DIR}/src/imu_blink_detector.cpp)
+target_include_directories(blink_differential PRIVATE ${CV2_STICKS3_DIR}/include)
+
+# ---- blink-dsp / blink-code / pipeline synthetic oracles ------------------
+cv2_add_test(blink_dsp_synth LABELS "blink;blink_dsp")
+cv2_add_test(blink_code_synth LABELS "blink;blink_code")
+cv2_add_test(blink_pipeline_synth LABELS "blink;blink_pipeline")
+
+# ---- golden-trace oracles (rung 2) -----------------------------------------
+# Read promoted fixtures from the SOURCE tree (traces/ is the oracle, hashed
+# in MANIFEST.sha256). Without fixtures they SKIP (exit 77) under the
+# developer preset and FAIL under -DCOLIBRINO_V2_ORACLE=ON.
+foreach(golden IN ITEMS blink_dsp_golden blink_code_golden)
+  cv2_add_test(${golden}
+    LABELS "blink;golden;${golden}"
+    SOURCES support/golden_runner.c
+    DEFS "CV2_TRACES_DIR=\"${CMAKE_SOURCE_DIR}/traces\""
+         "CV2_ORACLE=$<IF:$<BOOL:${COLIBRINO_V2_ORACLE}>,1,0>")
+  set_tests_properties(${golden} PROPERTIES SKIP_RETURN_CODE 77)
+endforeach()

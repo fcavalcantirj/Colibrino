@@ -6,6 +6,7 @@
 #include "colibrino/v2/access_intent.h"
 #include "colibrino/v2/blink_code.h"
 #include "colibrino/v2/blink_dsp.h"
+#include "colibrino/v2/blink_pipeline.h"
 #include "colibrino/v2/common.h"
 #include "colibrino/v2/feel_defaults.h"
 #include "colibrino/v2/imu_motion.h"
@@ -30,6 +31,10 @@ void test_headers_compile_and_link_from_cxx() {
   TEST_ASSERT_EQUAL_UINT8(CV2_INTENT_NONE, a.kind);
   TEST_ASSERT_EQUAL_UINT8(1u, a.release_all);
   TEST_ASSERT_EQUAL_UINT8(CV2_FAULT_DISCONNECTED, a.fault);
+  cv2_blink_pipeline_state_t bp{};
+  cv2_blink_pipeline_init(&bp, nullptr, nullptr);
+  const cv2_imu_sample_t s{};
+  TEST_ASSERT_EQUAL_UINT8(CV2_GESTURE_NONE, blink_detect(&s, 1, &bp).hdr.kind);
 }
 
 }  // namespace

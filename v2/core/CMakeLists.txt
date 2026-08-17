@@ -1,6 +1,10 @@
 # The pure core: one static library, C11, warnings-as-errors, optional
 # clang-tidy. No I/O, no clock, no allocation, no board types.
 add_library(colibrino_v2 STATIC
+  blink_code/code.c
+  blink_dsp/channel_imu.c
+  blink_dsp/impulse.c
+  blink_pipeline/pipeline.c
   contracts.c
   intent/arbiter.c
   profile/crc32.c
