@@ -280,9 +280,22 @@ Replay an ignored capture without touching hardware:
 
 ```sh
 c++ -std=c++17 -Iinclude tools/replay_imu_capture.cpp \
-  src/imu_blink_detector.cpp src/motion_controller.cpp -o /tmp/colibrino-replay
+  src/imu_blink_detector.cpp -o /tmp/colibrino-replay
 /tmp/colibrino-replay .device-backups/logs/device-monitor.log
 ```
+
+A device log may hold several guided probe sessions. The tool splits them on
+`EVENT,IMU_PROBE_STARTED` (fallback: a still block that follows a head block),
+prints one block per session with the firmware's own predicate
+(`RESULT=PASS` only for still 0 / blink >= 2 / head 0), then
+`SUMMARY sessions=N controls_clean=yes|no validation_passes=K`. Exit 0 means
+"parsed and every control stage clean" (never "physically validated");
+1 = a control-stage sequence occurred; 2 = parse failure or no sessions;
+`--require-validation [N]` adds exit 3 when fewer than N sessions pass
+(default 2). `--events` prints per-session `EVENT,<session>,<stage>,<ms>,IMPULSE|SEQUENCE`
+lines for cross-checking with the v2 host tests. Worn acceptance selects
+designated runs by ID in the capture tooling; the replay exit code alone never
+decides it.
 
 ## Hardware validation
 
