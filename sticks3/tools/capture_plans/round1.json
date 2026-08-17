@@ -1,0 +1,1635 @@
+{
+  "schema": "colibrino-v2-capture-plan/1",
+  "name": "round1",
+  "description": "Round-one worn StickS3 BMI270 capture plan. Deliberate gestures only inside BLINK_FIRMLY; KEEP_HEAD_STILL and MOVE_HEAD stay genuine controls in every run. Cue t_offset_ms values are relative to the EVENT,IMU_PROBE_STAGE line of the named stage.",
+  "board_model": "M5Stack StickS3 (BMI270)",
+  "nominal_rate_hz": 200,
+  "stage_durations_ms": {
+    "prepare": 3000,
+    "KEEP_HEAD_STILL": 6000,
+    "BLINK_FIRMLY": 15000,
+    "MOVE_HEAD": 12000
+  },
+  "session_caps": {
+    "max_runs": 8,
+    "max_firm_blinks": 50,
+    "max_minutes": 20,
+    "min_eye_rest_seconds": 45,
+    "stop_on_fatigue_at_least": 3
+  },
+  "acceptance": {
+    "designated_runs": [
+      [
+        "V1",
+        "V2"
+      ],
+      [
+        "V2",
+        "V3"
+      ]
+    ],
+    "rule": "Two designated V runs after fresh remounts must both replay RESULT=PASS with clean controls; zero control-stage sequences in every valid run; U expects 0/0/0; per-run replay parity; no fatigue stop. Other runs never count."
+  },
+  "sessions": [
+    {
+      "session_id": "A",
+      "firm_blink_total": 42,
+      "runs": [
+        {
+          "run_id": "BOOT",
+          "run_kind": null,
+          "probe": false,
+          "marker": "BOOT",
+          "instructions": {
+            "operator": "Plug the device in with your hands off it. Wait for at least 60 seconds of STATUS lines before touching Button A."
+          },
+          "min_status_seconds": 60,
+          "expected_status": {
+            "armed": "0",
+            "ir": "0",
+            "calibrated": "1",
+            "imu_blink": "0",
+            "ota": "READY"
+          }
+        },
+        {
+          "run_id": "R0",
+          "run_kind": "R0_bench",
+          "probe": true,
+          "mount": "bench",
+          "commit_class": "public",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Device resting on the bench. Do not touch it.",
+            "BLINK_FIRMLY": "Device resting on the bench. Do not touch it. Read the display and confirm it says blink twice, pause one second.",
+            "MOVE_HEAD": "Pick the device up and move it by hand as when pointing, then set it down."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "V1",
+          "run_kind": "V_standard",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 8,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Blink twice, pause one second, blink twice. Then repeat once.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "ge": 2
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "coded_pattern",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "ge": 2
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "HB1",
+          "run_kind": "HB_hard_singles",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 6,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "One single hard blink on each beep. Nothing between beeps.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 750,
+                "sound": "beep",
+                "tag": "hb1",
+                "group": null
+              },
+              {
+                "t_offset_ms": 2250,
+                "sound": "beep",
+                "tag": "hb2",
+                "group": null
+              },
+              {
+                "t_offset_ms": 3750,
+                "sound": "beep",
+                "tag": "hb3",
+                "group": null
+              },
+              {
+                "t_offset_ms": 5250,
+                "sound": "beep",
+                "tag": "hb4",
+                "group": null
+              },
+              {
+                "t_offset_ms": 6750,
+                "sound": "beep",
+                "tag": "hb5",
+                "group": null
+              },
+              {
+                "t_offset_ms": 8250,
+                "sound": "beep",
+                "tag": "hb6",
+                "group": null
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "hard_blink",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "per_cue": {
+                "kind": "hard_blink",
+                "expect": {
+                  "IMPULSE": {
+                    "eq": 1
+                  }
+                },
+                "search_window_ms": [
+                  50,
+                  650
+                ],
+                "tolerance_ms": 100
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "U",
+          "run_kind": "U_uniform_four",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 8,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Four evenly spaced hard blinks, one per beep. Two groups.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 750,
+                "sound": "beep",
+                "tag": "u1.1",
+                "group": "U1"
+              },
+              {
+                "t_offset_ms": 1250,
+                "sound": "beep",
+                "tag": "u1.2",
+                "group": "U1"
+              },
+              {
+                "t_offset_ms": 1750,
+                "sound": "beep",
+                "tag": "u1.3",
+                "group": "U1"
+              },
+              {
+                "t_offset_ms": 2250,
+                "sound": "beep",
+                "tag": "u1.4",
+                "group": "U1"
+              },
+              {
+                "t_offset_ms": 6250,
+                "sound": "beep",
+                "tag": "u2.1",
+                "group": "U2"
+              },
+              {
+                "t_offset_ms": 6750,
+                "sound": "beep",
+                "tag": "u2.2",
+                "group": "U2"
+              },
+              {
+                "t_offset_ms": 7250,
+                "sound": "beep",
+                "tag": "u2.3",
+                "group": "U2"
+              },
+              {
+                "t_offset_ms": 7750,
+                "sound": "beep",
+                "tag": "u2.4",
+                "group": "U2"
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "uniform_four",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "per_cue": {
+                "kind": "hard_blink",
+                "expect": {
+                  "IMPULSE": {
+                    "eq": 1
+                  }
+                },
+                "search_window_ms": [
+                  50,
+                  650
+                ],
+                "tolerance_ms": 100
+              },
+              "per_group": {
+                "kind": "uniform_four",
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "pad_before_ms": 100,
+                "pad_after_ms": 900,
+                "tolerance_ms": 200
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "BREAK_REMOUNT",
+          "run_kind": null,
+          "probe": false,
+          "marker": "BREAK_REMOUNT",
+          "instructions": {
+            "operator": "Take the glasses off. Rest the eyes for at least 45 seconds. Remount the device fresh before the next run."
+          },
+          "min_rest_seconds": 45
+        },
+        {
+          "run_id": "V2",
+          "run_kind": "V_standard",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 8,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Blink twice, pause one second, blink twice. Then repeat once.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "ge": 2
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "coded_pattern",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "ge": 2
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "C",
+          "run_kind": "C_cued_coded",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 12,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Blink hard on each beep. Two quick, pause, two quick. Three patterns.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 750,
+                "sound": "beep",
+                "tag": "c1.1",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 1250,
+                "sound": "beep",
+                "tag": "c1.2",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 2350,
+                "sound": "beep",
+                "tag": "c1.3",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 2850,
+                "sound": "beep",
+                "tag": "c1.4",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 5000,
+                "sound": "beep",
+                "tag": "c2.1",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 5500,
+                "sound": "beep",
+                "tag": "c2.2",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 6600,
+                "sound": "beep",
+                "tag": "c2.3",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 7100,
+                "sound": "beep",
+                "tag": "c2.4",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 9250,
+                "sound": "beep",
+                "tag": "c3.1",
+                "group": "C3"
+              },
+              {
+                "t_offset_ms": 9750,
+                "sound": "beep",
+                "tag": "c3.2",
+                "group": "C3"
+              },
+              {
+                "t_offset_ms": 10850,
+                "sound": "beep",
+                "tag": "c3.3",
+                "group": "C3"
+              },
+              {
+                "t_offset_ms": 11350,
+                "sound": "beep",
+                "tag": "c3.4",
+                "group": "C3"
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 3
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "coded_pattern",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 3
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "per_cue": {
+                "kind": "hard_blink",
+                "expect": {
+                  "IMPULSE": {
+                    "eq": 1
+                  }
+                },
+                "search_window_ms": [
+                  50,
+                  650
+                ],
+                "tolerance_ms": 100
+              },
+              "per_group": {
+                "kind": "coded_pattern",
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 1
+                  }
+                },
+                "pad_before_ms": 100,
+                "pad_after_ms": 900,
+                "tolerance_ms": 200
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "HS",
+          "run_kind": "HS_sweeps",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Keep the head still and the eyes relaxed. No deliberate blinks.",
+            "MOVE_HEAD": "Fast sweeps. Left and right until the next cue, then up and down, then diagonal."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": [
+              {
+                "t_offset_ms": 0,
+                "sound": "speak",
+                "text": "left and right",
+                "tag": "sweep-lr",
+                "group": null
+              },
+              {
+                "t_offset_ms": 4000,
+                "sound": "speak",
+                "text": "up and down",
+                "tag": "sweep-ud",
+                "group": null
+              },
+              {
+                "t_offset_ms": 8000,
+                "sound": "speak",
+                "text": "diagonal",
+                "tag": "sweep-diag",
+                "group": null
+              }
+            ]
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "windows": [
+                {
+                  "name": "lr-fast",
+                  "kind": "head_sweep",
+                  "t_start_ms": 0,
+                  "t_end_ms": 4000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "ud-fast",
+                  "kind": "head_sweep",
+                  "t_start_ms": 4000,
+                  "t_end_ms": 8000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "diag-fast",
+                  "kind": "head_sweep",
+                  "t_start_ms": 8000,
+                  "t_end_ms": 12000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "session_id": "B",
+      "firm_blink_total": 28,
+      "runs": [
+        {
+          "run_id": "R1",
+          "run_kind": "R_rest",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Rest. Eyes relaxed, blink naturally. No deliberate blinks.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "SB",
+          "run_kind": "SB_soft",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Soft ordinary blinks, about one per second. Nothing forceful.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "natural_blink",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "CF2",
+          "run_kind": "CF2_bumps",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Confounders. Tap the frame twice, then adjust the glasses, then swallow. No deliberate blinks.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 0,
+                "sound": "speak",
+                "text": "tap the frame twice",
+                "tag": "tap-frame",
+                "group": null
+              },
+              {
+                "t_offset_ms": 5000,
+                "sound": "speak",
+                "text": "adjust the glasses",
+                "tag": "adjust-glasses",
+                "group": null
+              },
+              {
+                "t_offset_ms": 10000,
+                "sound": "speak",
+                "text": "swallow",
+                "tag": "swallow",
+                "group": null
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "confounder",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "windows": [
+                {
+                  "name": "tap-frame",
+                  "kind": "confounder",
+                  "t_start_ms": 0,
+                  "t_end_ms": 5000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "adjust-glasses",
+                  "kind": "confounder",
+                  "t_start_ms": 5000,
+                  "t_end_ms": 10000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "swallow",
+                  "kind": "confounder",
+                  "t_start_ms": 10000,
+                  "t_end_ms": 15000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                }
+              ]
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "V3",
+          "run_kind": "V_standard",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 8,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Blink twice, pause one second, blink twice. Then repeat once.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "ge": 2
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "coded_pattern",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "ge": 2
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "HB2",
+          "run_kind": "HB_hard_singles",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 8,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "One single hard blink on each beep. Nothing between beeps.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 750,
+                "sound": "beep",
+                "tag": "hb1",
+                "group": null
+              },
+              {
+                "t_offset_ms": 2250,
+                "sound": "beep",
+                "tag": "hb2",
+                "group": null
+              },
+              {
+                "t_offset_ms": 3750,
+                "sound": "beep",
+                "tag": "hb3",
+                "group": null
+              },
+              {
+                "t_offset_ms": 5250,
+                "sound": "beep",
+                "tag": "hb4",
+                "group": null
+              },
+              {
+                "t_offset_ms": 6750,
+                "sound": "beep",
+                "tag": "hb5",
+                "group": null
+              },
+              {
+                "t_offset_ms": 8250,
+                "sound": "beep",
+                "tag": "hb6",
+                "group": null
+              },
+              {
+                "t_offset_ms": 9750,
+                "sound": "beep",
+                "tag": "hb7",
+                "group": null
+              },
+              {
+                "t_offset_ms": 11250,
+                "sound": "beep",
+                "tag": "hb8",
+                "group": null
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "hard_blink",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "per_cue": {
+                "kind": "hard_blink",
+                "expect": {
+                  "IMPULSE": {
+                    "eq": 1
+                  }
+                },
+                "search_window_ms": [
+                  50,
+                  650
+                ],
+                "tolerance_ms": 100
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "C2",
+          "run_kind": "C_cued_coded",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 12,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Blink hard on each beep. Two quick, pause, two quick. Three patterns.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 750,
+                "sound": "beep",
+                "tag": "c1.1",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 1250,
+                "sound": "beep",
+                "tag": "c1.2",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 2350,
+                "sound": "beep",
+                "tag": "c1.3",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 2850,
+                "sound": "beep",
+                "tag": "c1.4",
+                "group": "C1"
+              },
+              {
+                "t_offset_ms": 5000,
+                "sound": "beep",
+                "tag": "c2.1",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 5500,
+                "sound": "beep",
+                "tag": "c2.2",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 6600,
+                "sound": "beep",
+                "tag": "c2.3",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 7100,
+                "sound": "beep",
+                "tag": "c2.4",
+                "group": "C2"
+              },
+              {
+                "t_offset_ms": 9250,
+                "sound": "beep",
+                "tag": "c3.1",
+                "group": "C3"
+              },
+              {
+                "t_offset_ms": 9750,
+                "sound": "beep",
+                "tag": "c3.2",
+                "group": "C3"
+              },
+              {
+                "t_offset_ms": 10850,
+                "sound": "beep",
+                "tag": "c3.3",
+                "group": "C3"
+              },
+              {
+                "t_offset_ms": 11350,
+                "sound": "beep",
+                "tag": "c3.4",
+                "group": "C3"
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 3
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "coded_pattern",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 3
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "per_cue": {
+                "kind": "hard_blink",
+                "expect": {
+                  "IMPULSE": {
+                    "eq": 1
+                  }
+                },
+                "search_window_ms": [
+                  50,
+                  650
+                ],
+                "tolerance_ms": 100
+              },
+              "per_group": {
+                "kind": "coded_pattern",
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 1
+                  }
+                },
+                "pad_before_ms": 100,
+                "pad_after_ms": 900,
+                "tolerance_ms": 200
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "run_id": "HS2",
+          "run_kind": "HS_sweeps",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "public",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Keep the head still and the eyes relaxed. No deliberate blinks.",
+            "MOVE_HEAD": "Slow sweeps. Left and right until the next cue, then up and down, then diagonal."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [],
+            "MOVE_HEAD": [
+              {
+                "t_offset_ms": 0,
+                "sound": "speak",
+                "text": "left and right",
+                "tag": "sweep-lr",
+                "group": null
+              },
+              {
+                "t_offset_ms": 4000,
+                "sound": "speak",
+                "text": "up and down",
+                "tag": "sweep-ud",
+                "group": null
+              },
+              {
+                "t_offset_ms": 8000,
+                "sound": "speak",
+                "text": "diagonal",
+                "tag": "sweep-diag",
+                "group": null
+              }
+            ]
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "windows": [
+                {
+                  "name": "lr-slow",
+                  "kind": "head_sweep",
+                  "t_start_ms": 0,
+                  "t_end_ms": 4000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "ud-slow",
+                  "kind": "head_sweep",
+                  "t_start_ms": 4000,
+                  "t_end_ms": 8000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "diag-slow",
+                  "kind": "head_sweep",
+                  "t_start_ms": 8000,
+                  "t_end_ms": 12000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                }
+              ]
+            }
+          }
+        },
+        {
+          "run_id": "CF1",
+          "run_kind": "CF1_confounders",
+          "probe": true,
+          "mount": "glasses_right_temple",
+          "commit_class": "private",
+          "firm_blink_count": 0,
+          "instructions": {
+            "KEEP_HEAD_STILL": "Head still. Blink normally.",
+            "BLINK_FIRMLY": "Confounders. Chew until the next cue, then talk. No deliberate blinks.",
+            "MOVE_HEAD": "Move your head as when pointing."
+          },
+          "cues": {
+            "KEEP_HEAD_STILL": [],
+            "BLINK_FIRMLY": [
+              {
+                "t_offset_ms": 0,
+                "sound": "speak",
+                "text": "chew",
+                "tag": "chewing",
+                "group": null
+              },
+              {
+                "t_offset_ms": 7500,
+                "sound": "speak",
+                "text": "talk",
+                "tag": "talking",
+                "group": null
+              }
+            ],
+            "MOVE_HEAD": []
+          },
+          "expected_sequences": {
+            "KEEP_HEAD_STILL": {
+              "eq": 0
+            },
+            "BLINK_FIRMLY": {
+              "eq": 0
+            },
+            "MOVE_HEAD": {
+              "eq": 0
+            }
+          },
+          "labels": {
+            "KEEP_HEAD_STILL": {
+              "kind": "rest",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            },
+            "BLINK_FIRMLY": {
+              "kind": "confounder",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              },
+              "windows": [
+                {
+                  "name": "chewing",
+                  "kind": "confounder",
+                  "t_start_ms": 0,
+                  "t_end_ms": 7500,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                },
+                {
+                  "name": "talking",
+                  "kind": "confounder",
+                  "t_start_ms": 7500,
+                  "t_end_ms": 15000,
+                  "expect": {
+                    "CLICK_CANDIDATE": {
+                      "eq": 0
+                    }
+                  },
+                  "tolerance_ms": 250
+                }
+              ]
+            },
+            "MOVE_HEAD": {
+              "kind": "head_sweep",
+              "whole": {
+                "expect": {
+                  "CLICK_CANDIDATE": {
+                    "eq": 0
+                  }
+                },
+                "tolerance_ms": 0
+              }
+            }
+          }
+        }
+      ],
+      "note": "BN_boundary is omitted; run it as an optional Session C only if boundary evidence is needed."
+    }
+  ]
+}
