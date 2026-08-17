@@ -50,6 +50,33 @@ therefore remains gated off until a fresh current-boot probe passes.
 facts, task status, simulation boundaries, and the TCRT5000 purchase decision.
 Keep it syntactically valid and consistent with the prose documentation.
 
+## Multimodal accessibility direction
+
+Read `docs/ACCESSIBILITY_WEARABLE_STUDY.md` before voice, Bluetooth, click-sensor,
+Apple accessibility, or final-hardware work. The investigated product is a
+multimodal intent router: head motion, blink, offline voice or consistent vocal
+sound, dwell, and external adaptive switches feed one fail-closed policy layer.
+No input producer may emit HID directly.
+
+The StickS3 audio hardware is real and M5's Xiaozhi build proves its wake-word
+path, but current Colibrino uses Arduino-ESP32 2.0.17, has no speech-model flash
+partition, keeps Wi-Fi awake for OTA, and has no BLE HID. Begin speech work in
+a separate environment. A partition-table change requires an authorized cable
+flash and must preserve a viable recovery and OTA plan.
+
+Voice commands require a wake phrase, short command window, confidence and
+cooldown checks, and pointer freeze while listening. A bare command word must
+never click. Timeout, uncertainty, audio-task failure, transport loss, or low
+battery must do nothing and release held buttons. Voice is supplementary; keep
+a blink, dwell, or switch fallback.
+
+Do not equate the rejected onboard IR pair with a requirement to buy a bulky
+TCRT5000. Compact candidates such as VCNL36828P and Class 1 VL53L4CD are research
+leads only. Near-eye optical safety, mounting, and user accuracy require a
+separate physical validation before connection or capability claims. Arduino
+Nicla Voice is likewise a candidate, not a selected target; its BLE HID,
+high-rate motion, personalized model, and battery behavior remain unproven.
+
 ## StickS3 architecture
 
 `sticks3/src/main.cpp` owns setup, the cooperative loop, display pages, buttons,
@@ -249,8 +276,15 @@ or version any replacement layout explicitly.
 The root `README.md` is the project landing page and must keep both targets
 discoverable. `sticks3/README.md` is the operating and validation guide.
 `PORT_PLAN.json` is the machine-readable status. `PROJECT_KNOWLEDGE.md` is the
-durable deep context. Update all affected layers when facts change; do not leave
-contradictory claims.
+durable deep context. `docs/ACCESSIBILITY_WEARABLE_STUDY.md` is the product and
+hardware research record. Update all affected layers when facts change; do not
+leave contradictory claims.
+
+Do not leave substantial research, hardware evidence, rejected alternatives,
+or architectural decisions only in chat context. When the user has authorized
+repository publishing, write those findings into the appropriate durable files,
+validate them, and commit and push before handoff. Clearly separate sourced
+facts, assumptions, proposals, implemented behavior, and physical validation.
 
 Before handing off a change, run relevant tests and builds, validate JSON and
 shell syntax, inspect the final diff, confirm `.env` and `.pio/` remain ignored,

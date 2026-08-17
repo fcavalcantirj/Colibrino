@@ -51,6 +51,30 @@
     {
       "fact": "The tested StickS3's original PTT project supports authenticated ArduinoOTA as sticks3-ptt.local, while bedside-countdown-s3 is a separate LilyGO T-Display-S3.",
       "validation": "Read-only inspection of the original PTT build script and firmware, live mDNS discovery of the separate bedside board, and saved hardware identities. Colibrino now preserves the PTT OTA credentials and hostname behind ignored configuration and a MAC-guarded uploader."
+    },
+    {
+      "fact": "StickS3 contains the microphone, ES8311 codec, speaker path, 8 MB PSRAM, and ESP32-S3 resources needed for a local wake-word proof.",
+      "validation": "M5Stack hardware documentation, the official StickS3 Xiaozhi firmware guide, and the open Xiaozhi StickS3 board definition. This proves the audio chain, not Colibrino voice accuracy or safety."
+    },
+    {
+      "fact": "ESP-SR supports ESP32-S3 local WakeNet and MultiNet recognition, but current MultiNet command models do not support Portuguese.",
+      "validation": "Espressif ESP-SR WakeNet, MultiNet, AFE, model-loading, and benchmark documentation checked directly and through Context7."
+    },
+    {
+      "fact": "The validated Colibrino toolchain and flash layout cannot accept the current Arduino ESP_SR path without deliberate migration work.",
+      "validation": "PlatformIO resolves Arduino-ESP32 2.0.17 while the current Arduino ESP_SR wrapper belongs to 3.x; the installed 8 MB layout has dual OTA slots and no speech-model partition."
+    },
+    {
+      "fact": "ESP32-S3 can provide BLE HID but not Bluetooth LE Audio.",
+      "validation": "Espressif ESP32-S3 Bluetooth capability documentation. The intended near-term voice path is local recognition, not using StickS3 as a standard Bluetooth microphone."
+    },
+    {
+      "fact": "A bulky TCRT5000 module is not the only external blink-sensor option.",
+      "validation": "Vishay documents a 2.0 by 1.0 by 0.5 mm VCNL36828P proximity device for smart-glasses applications; ST documents the compact VL53L4CD up to 100 Hz with a Class 1 940 nm emitter. Neither is validated on this user or mount."
+    },
+    {
+      "fact": "Arduino Nicla Voice is a credible lower-power second prototype, not a selected replacement.",
+      "validation": "Arduino documents a 22.86 mm, approximately 2 g board with NDP120, nRF52832 BLE, BMI270, microphone, 16 MB flash, and battery support; its factory Alexa demo measurements are 0.8 mA BLE-off and 2.4 mA with advertising plus one-hertz sensor polling. BLE HID and high-rate multimodal use remain unproven."
     }
   ],
   "tasks": [
@@ -149,6 +173,42 @@
         "After bootstrap, two authenticated OTA round trips succeeded; each reboot returned with HID locked, IR off, BMI270 calibrated, blink clicks disabled, and OTA ready while bedside-countdown-s3 remained untouched.",
         "A third authenticated OTA upload installed the double-pause-double build before USB was disconnected; post-reboot CDC confirmation remains pending."
       ]
+    },
+    {
+      "id": "T9",
+      "name": "Isolated StickS3 wake-word proof",
+      "status": "researched_not_implemented",
+      "acceptance": [
+        "A separate Arduino-ESP32 3.x or ESP-IDF environment preserves the validated production environment.",
+        "A measured partition plan fits the application and selected models and documents how OTA and recovery remain viable.",
+        "The ES8311 microphone feeds continuous 16 kHz mono audio to a built-in WakeNet phrase and six to ten offline commands.",
+        "The proof emits diagnostics and display state only; it cannot emit HID.",
+        "Quiet, soft, television, conversation, fan, glasses-rub, seated, and lying tests retain false-wake, rejection, latency, and power evidence."
+      ]
+    },
+    {
+      "id": "T10",
+      "name": "Multimodal intent and BLE architecture",
+      "status": "designed_not_implemented",
+      "acceptance": [
+        "IMU, voice, blink, dwell, and external-switch producers emit bounded AccessIntent values rather than transport side effects.",
+        "One application safety reducer owns click, drag, release, recenter, pause, confidence, cooldown, and arming policy.",
+        "A wake phrase freezes pointer output before a short command window; a bare command word never clicks.",
+        "USB and BLE transport loss, host sleep, pairing loss, reboot, low battery, and task failure release all buttons and discard stale intent.",
+        "Wi-Fi remains off in normal wearable operation and authenticated OTA requires explicit maintenance mode."
+      ]
+    },
+    {
+      "id": "T11",
+      "name": "Apple and alternate-hardware comparison",
+      "status": "researched_not_tested",
+      "acceptance": [
+        "The intended user's actual speech or reliable sounds are compared with macOS Vocal Shortcuts and Voice Control before custom model training.",
+        "Switch Control, Dwell, Head Pointer, and Live Speech integration are checked with standard HID or switch semantics.",
+        "If IMU blink fails, a compact documented near-eye sensor is evaluated before a bulky TCRT5000 module.",
+        "StickS3 and Nicla Voice are compared using the same motion latency, wake accuracy, negative-audio soak, battery, weight, pairing, and recovery protocol.",
+        "No final board or sensor purchase decision is made without physical evidence."
+      ]
     }
   ],
   "simulation_boundary": {
@@ -184,12 +244,16 @@
   "sensor_purchase_decision": {
     "onboard_ir_pass": "Do not use the integrated demodulating IR pair as a near-eye click sensor; its documented spacing and physical results reject that geometry.",
     "imu_retest": "Repeat the guided double-pause-double run on the final rigid mount. Keep it only if at least two intentional patterns and zero ordinary-blink or head-motion patterns are recorded in repeated sessions.",
-    "external_sensor_required": "Use a separately bench-designed analog reflectance sensor such as TCRT5000 when the IMU gesture cannot pass consistently, is too tiring, or produces any control-stage event after conservative tuning."
+    "external_sensor_required": "When the IMU gesture cannot pass consistently, is too tiring, or produces any control-stage event, evaluate a compact sensor with a documented near-eye safety case such as a VL53L4CD-class ToF part before choosing a bulky TCRT5000 module. Every option still needs a schematic, optical review, and physical mount test."
   },
   "remaining_hardware_questions": [
     "Does the double-pause-double BMI270 gesture pass after repeated removal and remounting of the glasses?",
     "Is a coded four-blink click usable enough for the intended user, or only a proof that no external sensor is electrically required?",
-    "If an external analog sensor is needed, which expansion pins, supply rail, resistor values, and mechanical position meet electrical and eye-safety constraints?",
-    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?"
+    "If an external sensor is needed, does a compact Class 1 ToF or reviewed proximity part detect the eyelid reliably at a safe glasses geometry?",
+    "When should the preserved original flash image be restored to the tested StickS3 after the remaining hardware run?",
+    "Can the intended user reliably produce a wake phrase, command, or consistent non-word sound while seated and lying down, and is Portuguese required?",
+    "Can an actual WakeNet plus command build retain dual OTA in 8 MB, and what one-time cable partition migration is required?",
+    "Does continuous audio plus high-rate BMI270 sampling preserve pointer timing and useful battery runtime?",
+    "Can Nicla Voice provide robust BLE HID, high-rate motion, personalized audio inference, and fail-closed reconnect behavior?"
   ]
 }

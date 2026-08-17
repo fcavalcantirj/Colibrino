@@ -112,6 +112,32 @@ third authenticated upload installed the double-pause-double build; its upload
 completed before USB was disconnected, while another CDC post-reboot check
 remains pending.
 
+## Voice and wireless research boundary
+
+StickS3 contains an ES8311 codec, microphone, speaker, 8 MB PSRAM, and an
+ESP32-S3 capable of local WakeNet and MultiNet recognition. M5Stack's Xiaozhi
+image proves wake-word operation on this board, but Colibrino has not yet
+compiled, installed, or physically validated speech recognition.
+
+Voice work must begin in a separate PlatformIO environment. The validated
+production build is pinned to Arduino-ESP32 2.0.17, while the current Arduino
+`ESP_SR` wrapper belongs to 3.x. The existing 8 MB layout has dual OTA slots and
+no model partition, so actual application and model artifacts must be measured
+before choosing a new layout. A partition-table change cannot be delivered by
+ordinary OTA and requires one explicitly authorized cable flash.
+
+The intended interaction is wake phrase, pointer freeze, short offline command
+window, guarded action, then resume. Speech producers must recommend an
+`AccessIntent`; only the application safety layer may emit HID. Voice is not a
+replacement for blink, dwell, or an external adaptive switch. BLE HID and a
+maintenance-only Wi-Fi mode are required before treating the prototype as a
+cable-free wearable. ESP32-S3 does not provide Bluetooth LE Audio, so using the
+StickS3 as a normal Bluetooth microphone is out of scope.
+
+The complete evidence, Apple accessibility integration, compact optical-sensor
+candidates, Nicla Voice alternative, acceptance gates, and staged plan live in
+[`docs/ACCESSIBILITY_WEARABLE_STUDY.md`](../docs/ACCESSIBILITY_WEARABLE_STUDY.md).
+
 ## Wokwi simulator gate
 
 Wokwi uses a generic ESP32-S3 DevKitC rather than a complete StickS3 model. The

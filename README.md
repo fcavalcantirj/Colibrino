@@ -25,6 +25,22 @@ tetraplegia, artrogripose, amputações e paralisia cerebral.
 The StickS3 port is the active development path. It does not replace or modify
 the legacy AVR firmware.
 
+## Multimodal wearable direction
+
+The StickS3 also has a complete microphone, codec, speaker, PSRAM, and local
+ESP32-S3 speech-recognition path. The investigated product direction is
+therefore broader than a blink-only mouse: combine head motion, a safe blink or
+adaptive switch, offline wake-word commands, dwell, and Apple accessibility
+features behind one fail-closed intent layer. Voice must supplement, never
+replace, a non-speech access method.
+
+The StickS3 is the current proof platform. An Arduino Nicla Voice or a custom
+NDP120-plus-BLE design is a possible lighter, lower-power successor, while a
+miniature proximity or Class 1 Time-of-Flight component could replace the bulky
+TCRT5000 form factor if the IMU click experiment fails. None of those later
+hardware choices is validated or approved for purchase yet. See the complete
+[accessibility wearable architecture study](./docs/ACCESSIBILITY_WEARABLE_STUDY.md).
+
 ## What the StickS3 port provides
 
 The new implementation uses the built-in BMI270 for pointer motion and native
@@ -95,7 +111,8 @@ environment or the repository's ignored `.env`:
 A successful run prints `COLIBRINO_SIM_PASS`. See the complete
 [StickS3 guide](./sticks3/README.md), the machine-readable
 [port plan](./sticks3/PORT_PLAN.json), and the contributor context in
-[AGENTS.md](./AGENTS.md).
+[AGENTS.md](./AGENTS.md). Product and hardware research is retained in the
+[accessibility wearable study](./docs/ACCESSIBILITY_WEARABLE_STUDY.md).
 
 ## What simulation proves
 
@@ -173,6 +190,7 @@ The original Portuguese video tutorial remains available on
 | `LimparCalibracao/` | Legacy EEPROM calibration reset utility |
 | `3d models/` | Printable enclosure assets |
 | `doc/` | Assembly images |
+| `docs/` | Product architecture and hardware research |
 | `PROJECT_KNOWLEDGE.md` | Durable architectural and historical context for future development sessions |
 
 ## Community and license

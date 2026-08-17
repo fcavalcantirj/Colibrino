@@ -2,6 +2,10 @@
 
 # Changelog
 
+## 2026-08-17T01:58:32Z — HEAD 8abfa03
+
+Expanded the product investigation from a StickS3 blink head mouse to a multimodal accessibility wearable. Verified the StickS3 wake-word hardware and ESP-SR path, recorded the current Arduino and flash-partition obstacles, mapped Apple Voice Control, Vocal Shortcuts, Switch Control, Dwell, and Live Speech integration, compared compact near-eye sensors and the Nicla Voice low-power alternative, and defined a fail-closed intent architecture plus staged physical acceptance plan. This is research evidence only; no voice, BLE HID, new optical sensor, or Nicla capability has been implemented or physically validated.
+
 ## 2026-08-15T18:45:17Z — HEAD 7b3b55b
 
 Five additional worn guided sessions invalidated the evenly spaced four-blink IMU cadence: it recognized one intentional sequence in two runs but also produced a still-control sequence in three runs, while all head-motion controls remained clear. A fixed-threshold search could eliminate those controls only by losing intended runs, so the detector now requires double blink, a 0.8-1.4 second pause, and double blink at a 1.1 dps entry threshold. Thirteen native tests, eleven Wokwi checks, the production build, and replay of all retained controls pass; the coded build was committed, pushed, and installed in a third authenticated OTA upload, but its fresh worn validation and post-reboot CDC confirmation remain pending.
@@ -42,7 +46,7 @@ Initial capture at the current repository tip. It records the AVR firmware archi
 
 ### Snapshot
 
-The last fully analyzed source commit is `7b3b55b991eef595a8efa35997ef67be211fac74`. It contains the physically exercised StickS3 firmware, coded IMU blink classifier, hardware-validated authenticated OTA, MAC-guarded uploader, capture replay tool, native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
+The last fully analyzed source commit is `8abfa036d0ae91b47f3a0b0cfc5e02d94390a0a8`. It contains the physically exercised StickS3 firmware, coded IMU blink classifier, hardware-validated authenticated OTA, MAC-guarded uploader, capture replay tool, native and Wokwi validation, hardware findings, and operating documentation. The current knowledge update describes that source revision plus externally verified future-product research and intentionally does not include ignored device backups, physical capture logs, credentials, or PlatformIO output.
 
 ### Repository lineage
 
@@ -480,6 +484,78 @@ The authoritative StickS3 product and pin documentation is `https://docs.m5stack
 
 Simulator scope was checked against `https://github.com/m5stack/lv_m5_emulator`, its current `platformio.ini`, the StickS3 UiFlow2 workflow at `https://docs.m5stack.com/en/uiflow2/sticks3/program`, Espressif's ESP32-S3 QEMU guide at `https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-guides/tools/qemu.html`, and Wokwi's ESP32 guide at `https://docs.wokwi.com/guides/esp32`.
 
+# Accessibility wearable direction
+
+### Product model
+
+The investigated product should be a multimodal accessibility intent router rather than a blink-only mouse or general voice assistant. Head motion, deliberate blink, offline voice or consistent vocal sound, dwell, and external adaptive switches should be independent producers. A central fail-closed policy layer should validate their events before a USB HID, BLE HID, Apple Switch Control, keyboard, Shortcut, or optional caregiver action can occur. Voice must supplement rather than replace a non-speech access path.
+
+The current rule that `sticks3/src/main.cpp` is the only owner of HID side effects is the correct architectural foundation. A future `AccessIntent` type should carry bounded semantic requests such as click, right click, double click, drag, drop, scroll, recenter, pause, cancel, or switch activation. Sensor and recognition modules must not call a transport directly.
+
+### StickS3 audio facts
+
+M5Stack documents an ES8311 mono codec, high-sensitivity MEMS microphone, AW8737 amplifier, one-watt speaker, 8 MB PSRAM, and 250 mAh battery in addition to the ESP32-S3 and BMI270. M5's Xiaozhi image runs a wake phrase on the exact board, proving the hardware audio path. The Xiaozhi conversational service is Wi-Fi and account dependent and is not suitable as the safety-critical action path.
+
+The open Xiaozhi StickS3 definition uses MCLK GPIO18, BCLK GPIO17, word-select GPIO15, audio output GPIO14, audio input GPIO16, and codec I2C on GPIO47 and GPIO48. It limits speaker output to 60 percent. M5 warns that speaker volume above 75 percent can reboot the board. M5's published microphone example alternates microphone and speaker operation; simultaneous full-duplex behavior is not proven for Colibrino.
+
+Espressif WakeNet9 and WakeNet9l support ESP32-S3 local wake-word detection. MultiNet accepts a runtime command vocabulary from 16 kHz, 16-bit mono audio and supports hundreds of English or Chinese offline commands depending on model version. Portuguese is not supported by the current MultiNet command models. Espressif's AFE supplies VAD, noise suppression, and optional echo cancellation. Published reference-board memory, latency, and accuracy figures establish feasibility only and cannot be transferred to the StickS3 microphone, glasses mount, acoustic noise, or intended user's speech.
+
+A production custom wake word is a data, licensing, training, and validation project. Start with a built-in phrase such as "Hi M Five" or "Hi ESP". Assumption: a personalized non-word sound or Portuguese vocabulary may later be practical on a trainable NDP120-class processor, but no model or dataset exists yet.
+
+### Voice toolchain and storage constraints
+
+The verified production environment resolves Arduino-ESP32 2.0.17. Espressif's convenient Arduino `ESP_SR` wrapper belongs to the 3.x generation. Voice experiments need a separate Arduino-ESP32 3.x or ESP-IDF environment so the proven USB, OTA, motion, and recovery build remains reproducible.
+
+The current 8 MB layout has NVS, OTA metadata, two approximately 3.3 MB application slots, about 1.5 MB SPIFFS, and a coredump partition. It has no model partition. Espressif's general model-loading example reserves 6 MB. Assumption: a selected minimal WakeNet plus MultiNet artifact may fit a smaller partition, but only an actual build can establish this. Changing the partition table requires one explicitly authorized cable flash; an ordinary OTA image cannot safely replace the installed partition table.
+
+ESP32-S3 supports BLE HID but not Bluetooth LE Audio. Using StickS3 as a normal Mac Bluetooth microphone is not a viable design. Native USB Audio Class is technically possible, but combining audio with the existing CDC and HID stack is higher risk and not required for the first local wake-word experiment.
+
+The current OTA configuration keeps Wi-Fi awake. A battery wearable should disable Wi-Fi during ordinary operation, use BLE HID for primary cable-free control, and expose an explicit maintenance mode for authenticated OTA. Reconnect, host sleep, pairing loss, low battery, and transport switching must release buttons and discard stale actions.
+
+### Safe voice state machine
+
+A wake detection should freeze the pointer, open a short command window, recognize one bounded action, run arming, connection, confidence, and cooldown checks, provide brief feedback, and then resume or recenter. A bare command word must never click. Timeout, uncertainty, cancellation, audio-task overrun, transport loss, low battery, or failed calibration must produce no action and release every held button.
+
+Freezing motion prevents jaw and head movement during speech from displacing the target. Short earcons are preferable to simultaneous spoken feedback because full-duplex audio is unproven. Haptic feedback on a head-mounted IMU can create false motion and should suppress pointer output while active. High-consequence host actions should use host-level confirmation.
+
+### Apple accessibility integration
+
+macOS Voice Control already provides navigation, numbered overlays, grids, dictation, custom vocabulary, custom commands, and Shortcut execution. After its initial language download, normal operation can run without an Internet connection. Vocal Shortcuts on Apple-silicon Macs learns a selected word or another consistent sound locally and is specifically intended to help people with moderate-to-severe atypical speech who can reliably vocalize an utterance. It should be tested against the intended user's actual sounds before building personalized embedded recognition.
+
+Apple Switch Control supports one or multiple switches for scanning, selecting, tapping, dragging, typing, and custom panels. Head Pointer and Dwell provide native fallbacks, and Live Speech speaks typed or saved phrases. Colibrino should expose standard BLE or USB HID and one- or two-switch semantics. Assumption: a future companion app is useful for calibration, profiles, logs, and Shortcuts but should not be required for basic access.
+
+### Compact blink-sensor alternatives
+
+Rejecting StickS3 onboard IR does not require a bulky TCRT5000 breakout. Vishay VCNL36828P integrates a 940 nm VCSEL and proximity receiver in a 2.0 by 1.0 by 0.5 mm I2C package and lists smart glasses as an application. Its published material does not provide the same explicit completed-system Class 1 statement as the ST alternative, so near-eye use requires formal optical and regulatory review.
+
+ST VL53L4CD is a miniature short-range Time-of-Flight sensor with an 18 degree field of view, measurement rates up to 100 Hz, and a documented Class 1 940 nm emitter when used as specified. It is a stronger safety candidate for an initial compact breakout evaluation, but it has not detected this user's eyelid and its field of view, cover, mounting, ambient behavior, and practical sub-centimeter accuracy still require physical validation.
+
+Assumption: the preferred mechanical arrangement is a tiny sensor beside the lens on a flexible PCB with compute and battery mass along the glasses arm or behind the ear. Never aim an undocumented emitter at an eye or infer optical safety from an electrical success.
+
+### Nicla Voice alternative
+
+Arduino Nicla Voice is the strongest second prototype found. Its 22.86 mm square bare board is approximately 2 g and combines an NDP120 always-on neural processor, nRF52832 BLE, BMI270, BMM150, high-quality digital microphone, 16 MB external flash, battery charging, and an external microphone connector. Arduino measures its factory Alexa demo at 0.8 mA with BLE off and 2.4 mA with BLE advertising plus one-hertz sensor polling. Those values do not predict high-rate head-mouse operation but establish a promising always-listening power baseline.
+
+Edge Impulse supports training and deploying custom Nicla Voice audio models, including small vocabularies or non-word sounds. This requires an external account, dataset, training, posterior tuning, and a model flash workflow. BLE HID behavior, high-rate BMI270 access, simultaneous motion plus audio inference, pairing recovery, model licensing, and realistic battery runtime remain unproven. The onboard SAMD11 is a programming bridge, so native USB HID should not be assumed.
+
+Assumption: a final product will choose between an ESP32-S3 or S31 with at least 16 MB flash and 8 MB PSRAM for simpler low-cost development, and an NDP115 or NDP120 plus Nordic BLE controller for better always-on power and personalized audio. The choice requires measured StickS3-versus-Nicla motion, voice, weight, battery, and recovery evidence.
+
+### Competitive targets
+
+Quha Zono X demonstrates a 12 g gyroscopic Bluetooth head mouse with a quoted 208 Hz update rate, up to 18 hours, dwell, external switches, multiple mounts, gestures, a magnetic dock, and four-device pairing. GlassOuse demonstrates head-worn mouse, switch, joystick, multi-device, and adaptive-switch modes. Cephable demonstrates local software combination of voice, facial expression, head movement, gestures, and switches.
+
+Assumption: useful final targets are less than 15 g on the head, 200 Hz-class motion, all-day battery, cable-free primary operation, simple charging, multiple mounting choices, multi-device pairing, a universal adaptive-switch input, and basic operation without an application, account, Wi-Fi, or cloud service.
+
+### Staged validation
+
+Stage zero compares the current pointer with macOS Dwell, Head Pointer, Voice Control, Vocal Shortcuts, Switch Control, and Live Speech, recording which modalities the intended user can use comfortably. Stage one builds an isolated StickS3 16 kHz microphone and built-in wake-word proof that emits diagnostics only. It tests quiet and soft speech, television, conversation, fan noise, glasses rubbing, microphone orientation, and lying versus seated use.
+
+Stage two introduces `AccessIntent`, pointer freeze during speech, a central safety reducer, BLE HID alongside USB, maintenance-only Wi-Fi, a generic dry-contact switch input, and watchdog behavior. Stage three completes the installed coded-IMU worn test, evaluates a compact optical sensor if that test is inconsistent or tiring, and compares a Nicla Voice proof. Stage four selects a custom board and mechanical system only after measured evidence.
+
+Voice acceptance requires zero HID actions during a long negative-audio soak, repeatable intended commands in real positions and noise, stable pointer targeting during speech, and fail-closed behavior for every audio, power, and transport fault. Wokwi can test intent and policy logic but cannot validate microphone acoustics, a glasses-mounted BMI270, BLE hosts, battery, optics, or user usability.
+
+The full source list and staged design record are in `docs/ACCESSIBILITY_WEARABLE_STUDY.md`.
+
 # Constraints for future changes
 
 ### Preserve user-visible semantics deliberately
@@ -535,6 +611,22 @@ The cable bootstrap and two authenticated OTA round trips are complete, includin
 ### Transport priority
 
 The open upstream issue requests Bluetooth, while the current user also named the USB-capable StickS3. It remains unresolved whether low-latency wired USB, wireless BLE, or dual transport is the primary requirement and how pairing or cable transitions should behave.
+
+### Voice suitability and language
+
+It is unknown which wake phrase, word, or consistent non-word sound the intended user can produce reliably while seated and lying down, how quickly voice becomes tiring, and whether Portuguese is mandatory for device-side commands. ESP-SR MultiNet does not currently supply Portuguese commands. Compare Apple Vocal Shortcuts with the isolated embedded proof before selecting or training a speech stack.
+
+### Speech partition and runtime
+
+The minimum viable WakeNet and command-model flash artifacts have not been built against the current application. It is unknown whether dual OTA can remain practical in 8 MB, whether upgrading the Arduino core changes USB or OTA behavior, and how continuous audio plus BMI270 sampling affects pointer timing, battery, temperature, or microphone interference.
+
+### Compact optical sensor
+
+VCNL36828P and VL53L4CD are research candidates, not validated click sensors. The exact eyelid distance signal, sample rate, ambient rejection, cover geometry, eye-safety documentation, supply rail, I2C pins, interrupt behavior, mount, and flexible interconnect remain unresolved. Prefer a Class 1 documented evaluation path and stop immediately on any safety ambiguity.
+
+### Nicla Voice feasibility
+
+Nicla Voice has not been acquired or tested. Standard BLE HID mouse and switch behavior, 100-200 Hz motion delivery through the NDP120-connected BMI270, simultaneous custom audio inference, local model update and licensing, host reconnect, battery size, and accessible feedback must be proven before it can replace StickS3.
 
 ### Build baseline
 
