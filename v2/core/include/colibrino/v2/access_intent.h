@@ -59,6 +59,19 @@ typedef struct {
   uint8_t reserved;
 } cv2_intent_config_t;
 
+/* Memory horizon of every timestamp the arbiter stores (heartbeats, last
+ * ordered event, last granted click, last queue fault). CV2_MS_DIFF is only
+ * meaningful while two stamps are < 2^31 ms apart, so each arbitrate call
+ * first ages its state: a stored stamp further in the past than this (or
+ * whose signed distance has already inverted, which reads as "future") is
+ * pinned at exactly this age. The fact it encodes survives - "older than any
+ * configured window" - because the horizon is above the largest uint16
+ * window a profile can carry, so a timed-out producer or a latched queue
+ * fault stays timed out / latched forever and a cooldown or freshness bound
+ * is never shortened. Requires the arbiter to be called at least once every
+ * 2^31 - 65536 ms (~24.8 days); a host tick trivially satisfies that. */
+#define CV2_INTENT_STATE_HORIZON_MS 65536u
+
 typedef struct {
   cv2_ms_t last_seen_ms[CV2_PRODUCER_COUNT]; /* last heartbeat or valid header */
   uint32_t last_seq[CV2_PRODUCER_COUNT];
@@ -116,13 +129,14 @@ void cv2_intent_heartbeat(cv2_intent_state_t *st, uint16_t producer_id,
 
 /* Evaluate one event (or a tick when ev == NULL) at now_ms.
  *
- * Order: context faults (queue latched -> disconnected -> battery -> unarmed
- * -> uncalibrated) -> header validity (MALFORMED / PRODUCER_UNKNOWN) ->
- * producer disabled -> duplicate -> stale -> expired -> producer health ->
- * confidence -> cooldown -> grant. A valid header refreshes the producer's
- * heartbeat even when the event is rejected later. A tick evaluates only
- * context + producer health and sets release_all whenever the system is in
- * an unsafe state (idempotent). */
+ * Every call first ages the stored timestamps to CV2_INTENT_STATE_HORIZON_MS
+ * (see above). Order: context faults (queue latched -> disconnected ->
+ * battery -> unarmed -> uncalibrated) -> header validity (MALFORMED /
+ * PRODUCER_UNKNOWN) -> producer disabled -> duplicate -> stale -> expired ->
+ * producer health -> confidence -> cooldown -> grant. A valid header
+ * refreshes the producer's heartbeat even when the event is rejected later.
+ * A tick evaluates only context + producer health and sets release_all
+ * whenever the system is in an unsafe state (idempotent). */
 cv2_action_t cv2_intent_arbitrate(cv2_intent_state_t *st,
                                   const cv2_intent_context_t *ctx,
                                   const cv2_intent_event_t *ev, cv2_ms_t now_ms,

@@ -5,7 +5,9 @@
 //   v1.completedSequences() == pipeline.clicks       (after every sample)
 // Inputs: the five sticks3 synthetic patterns, a >= 200k-sample xorshift32
 // fuzz at 5 ms cadence with injected impulses, head bursts and dropout gaps,
-// and a run whose timestamps start near 0xFFFFFF00 to cross the wrap.
+// fuzz runs that cross the 0xFFFFFFFF -> 0 wrap in steady state plus a
+// deterministic slide of the wrap through a coded pattern, and a sweep of
+// end-to-end intervals exactly on the window boundaries.
 // Both translation units are built with -ffp-contract=off.
 #include <cstdint>
 #include <cstring>
@@ -25,6 +27,8 @@ struct Pair {
   uint32_t samples = 0;
   uint32_t clicks = 0;
   uint32_t impulses = 0;
+  uint32_t last_impulse_ms = 0;  // t_ms of the last IMPULSE event (its end)
+  uint32_t last_click_ms = 0;    // t_ms of the last CLICK_CANDIDATE
 
   Pair() { cv2_blink_pipeline_init(&v2, nullptr, nullptr); }
 
@@ -60,9 +64,11 @@ struct Pair {
     }
     if (v2_click) {
       ++clicks;
+      last_click_ms = g.hdr.t_ms;
     }
     if (blink.hdr.kind == CV2_BLINK_IMPULSE) {
       ++impulses;
+      last_impulse_ms = blink.hdr.t_ms;
     }
     return v2_click;
   }
@@ -84,6 +90,26 @@ void feedImpulse(Pair& p, uint32_t& now_ms, bool& emitted) {
     const float value = index < 4 ? -1.35f : (index < 8 ? 0.95f : 0.10f);
     emitted = p.step(now_ms, value, 0.2f * value, -0.1f * value) || emitted;
     now_ms += 5;
+  }
+}
+
+// The synthetic impulse above opens on its first sample and closes (IMPULSE
+// emitted, end-to-end intervals are measured from here) on its ninth, 40 ms
+// later; feedImpulse returns 20 ms after that.
+constexpr uint32_t kImpulseEndOffsetMs = 40;
+
+// Quiet samples at 5 ms cadence until now_ms == end_ms exactly; the last
+// step may be shorter than 5 ms so the next impulse can start on any ms
+// (the baseline dt clamp accepts 1..50 ms in both implementations).
+void feedStillUntil(Pair& p, uint32_t& now_ms, uint32_t end_ms) {
+  uint32_t elapsed = 0;
+  while (now_ms != end_ms) {
+    const float noise = (elapsed % 20 == 0) ? 0.12f : -0.06f;
+    p.step(now_ms, noise, -noise, 0.0f);
+    const uint32_t remaining = end_ms - now_ms;
+    const uint32_t dt = remaining < 5 ? remaining : 5;
+    now_ms += dt;
+    elapsed += dt;
   }
 }
 
@@ -322,8 +348,110 @@ void test_fuzz_200k_samples_5ms_cadence() { run_fuzz(0x1234ABCDu, 0u, 200000u, 2
 
 void test_fuzz_second_seed() { run_fuzz(0xDEADBEEFu, 1000u, 200000u, 20u); }
 
+// Start far enough before the wrap that the generator is in steady state
+// (impulses, sequences, holds and refractories all live) when the clock
+// crosses 0xFFFFFFFF -> 0, at three different depths into the run.
 void test_fuzz_across_timestamp_wrap() {
-  run_fuzz(0x0BADF00Du, 0xFFFFFF00u, 200000u, 20u);
+  run_fuzz(0x0BADF00Du, 0u - 60000u, 200000u, 20u);
+  run_fuzz(0x0BADF00Du, 0u - 6000u, 200000u, 20u);
+  run_fuzz(0x5EEDF00Du, 0u - 3000u, 200000u, 20u);
+}
+
+// Deterministic: the wrap point slid in 7 ms steps (coprime with the 5 ms
+// cadence, so every sample phase is hit) through a script that keeps every
+// stateful window of both machines live at some point: the seed quiet gate
+// with an impulse inside it, coded pattern A, its click and click hold with
+// an impulse inside it, coded pattern B, a head burst that reopens the quiet
+// gate with an impulse inside it, and one accepted impulse after it.
+// Whatever the wrap crosses, the accepted-impulse count at each checkpoint
+// and both click times must be exact and both machines must agree.
+void test_wrap_slides_through_coded_pattern() {
+  // Script relative to its start (see feedStill / feedImpulse):
+  //   0      still 1000
+  //   1000   imp0 inside the 2 s seed quiet gate: not counted
+  //   1060   still 1040
+  //   2100   imp1 (end 2140)  still 400  imp2 (end 2600, +460 double)
+  //   2620   still 900        imp3 (end 3560, +960 pause)
+  //   3580   still 400        imp4 (end 4020, +460 double) -> CLICK A @4020
+  //   4040   still 1000       imp5 @5040 inside the 1500 ms hold: not counted
+  //   5100   still 500        imp6 (end 5640, first of pattern B)
+  //   5660   still 400  imp7  still 900  imp8  still 400  imp9 -> CLICK B @7520
+  //   7540   still 1500
+  //   9040   head burst (CANCEL, quiet gate until 11040)
+  //   9045   still 955        imp10 @10000 inside the quiet gate: not counted
+  //   10060  still 1040       imp11 (end 11140) accepted
+  //   11160  still 340 -> 11500
+  constexpr uint32_t kSpanMs = 11500;
+  constexpr uint32_t kClickA = 4020;
+  constexpr uint32_t kClickB = 7520;
+  constexpr uint32_t kBurst = 9040;
+  uint32_t runs = 0;
+  uint32_t wrapped_in_seed_gate = 0;
+  uint32_t wrapped_inside_pattern_a = 0;
+  uint32_t wrapped_inside_hold = 0;
+  uint32_t wrapped_inside_pattern_b = 0;
+  uint32_t wrapped_in_burst_gate = 0;
+  for (uint32_t offset = 0; offset <= kSpanMs; offset += 7) {
+    const uint32_t start = 0u - offset;
+    Pair p;
+    uint32_t now = start;
+    bool emitted = false;
+    feedStill(p, now, 1000);
+    feedImpulse(p, now, emitted);  // inside the seed quiet gate
+    TEST_ASSERT_EQUAL_UINT32(0, p.impulses);
+    feedStill(p, now, 1040);
+    feedImpulse(p, now, emitted);
+    feedStill(p, now, 400);
+    feedImpulse(p, now, emitted);
+    feedStill(p, now, 900);
+    feedImpulse(p, now, emitted);
+    feedStill(p, now, 400);
+    feedImpulse(p, now, emitted);
+    TEST_ASSERT_EQUAL_UINT32(4, p.impulses);
+    TEST_ASSERT_EQUAL_UINT32(1, p.clicks);
+    TEST_ASSERT_EQUAL_UINT32(start + kClickA, p.last_click_ms);
+    feedStill(p, now, 1000);
+    feedImpulse(p, now, emitted);  // inside the click hold
+    TEST_ASSERT_EQUAL_UINT32(4, p.impulses);
+    feedStill(p, now, 500);
+    feedImpulse(p, now, emitted);
+    feedStill(p, now, 400);
+    feedImpulse(p, now, emitted);
+    feedStill(p, now, 900);
+    feedImpulse(p, now, emitted);
+    feedStill(p, now, 400);
+    feedImpulse(p, now, emitted);
+    TEST_ASSERT_EQUAL_UINT32(8, p.impulses);
+    TEST_ASSERT_EQUAL_UINT32(2, p.clicks);
+    TEST_ASSERT_EQUAL_UINT32(start + kClickB, p.last_click_ms);
+    feedStill(p, now, 1500);
+    TEST_ASSERT_EQUAL_UINT32(start + kBurst, now);
+    p.step(now, 0.0f, 8.0f, 0.0f);  // head burst reopens the quiet gate
+    now += 5;
+    feedStill(p, now, 955);
+    feedImpulse(p, now, emitted);  // inside the reopened quiet gate
+    TEST_ASSERT_EQUAL_UINT32(8, p.impulses);
+    feedStill(p, now, 1040);
+    feedImpulse(p, now, emitted);
+    TEST_ASSERT_EQUAL_UINT32(9, p.impulses);
+    feedStill(p, now, 340);
+    TEST_ASSERT_EQUAL_UINT32(start + kSpanMs, now);
+    TEST_ASSERT_TRUE(emitted);
+    TEST_ASSERT_EQUAL_UINT32(2, p.clicks);
+    ++runs;
+    // Phase bookkeeping (offset = ms of the script that lie before 0).
+    if (offset > 0 && offset < 2000) ++wrapped_in_seed_gate;
+    if (offset > 2100 && offset < kClickA) ++wrapped_inside_pattern_a;
+    if (offset > kClickA && offset < kClickA + 1500) ++wrapped_inside_hold;
+    if (offset > 5600 && offset < kClickB) ++wrapped_inside_pattern_b;
+    if (offset > kBurst && offset < kBurst + 2000) ++wrapped_in_burst_gate;
+  }
+  TEST_ASSERT_GREATER_THAN_UINT32(1600, runs);
+  TEST_ASSERT_GREATER_THAN_UINT32(100, wrapped_in_seed_gate);
+  TEST_ASSERT_GREATER_THAN_UINT32(100, wrapped_inside_pattern_a);
+  TEST_ASSERT_GREATER_THAN_UINT32(100, wrapped_inside_hold);
+  TEST_ASSERT_GREATER_THAN_UINT32(100, wrapped_inside_pattern_b);
+  TEST_ASSERT_GREATER_THAN_UINT32(100, wrapped_in_burst_gate);
 }
 
 void test_fuzz_many_seeds() {
@@ -332,32 +460,76 @@ void test_fuzz_many_seeds() {
   }
 }
 
-// Deterministic sweep of coded patterns with every gap on / just outside its
-// window boundary, so the interval matcher parity is exercised exactly at
-// 300 / 700 / 800 / 1400 ms in both implementations.
+// Deterministic sweep of coded patterns whose end-to-end impulse intervals
+// (what blink-code measures) land exactly on / 1 ms either side of the
+// 700 / 800 / 1400 ms window boundaries, so the interval matcher parity is
+// exercised at the boundaries in both implementations. The 300 ms lower
+// double boundary is unreachable end to end: the 300 ms impulse refractory
+// plus the 20 ms minimum impulse make 320 ms the shortest possible interval
+// (340 ms with this 40 ms synthetic impulse, which is swept as the shortest
+// reachable one); 299/300/301 are covered by blink_code_synth's hand-built
+// events. Every combo asserts the intended intervals were really produced
+// (non-vacuity) and that a click happens iff all three intervals are inside
+// their windows.
 void test_boundary_gap_sweep() {
-  const uint32_t gaps1[] = {240, 299, 300, 301, 500, 699, 700, 701, 900};
-  const uint32_t gaps2[] = {700, 799, 800, 801, 1100, 1399, 1400, 1401, 1500};
-  for (uint32_t g1 : gaps1) {
-    for (uint32_t g2 : gaps2) {
-      for (uint32_t g3 : gaps1) {
+  constexpr uint32_t kDoubleMin = CV2_FEEL_BLINK_DOUBLE_MINIMUM_MS;
+  constexpr uint32_t kDoubleMax = CV2_FEEL_BLINK_DOUBLE_MAXIMUM_MS;
+  constexpr uint32_t kPauseMin = CV2_FEEL_BLINK_PAUSE_MINIMUM_MS;
+  constexpr uint32_t kPauseMax = CV2_FEEL_BLINK_PAUSE_MAXIMUM_MS;
+  const uint32_t doubles[] = {340, 500, 699, 700, 701, 900};
+  const uint32_t pauses[] = {700, 799, 800, 801, 1100, 1399, 1400, 1401, 1500};
+  const auto in_double = [&](uint32_t i) {
+    return i >= kDoubleMin && i <= kDoubleMax;
+  };
+  const auto in_pause = [&](uint32_t i) {
+    return i >= kPauseMin && i <= kPauseMax;
+  };
+  uint32_t combos = 0;
+  uint32_t clicking_combos = 0;
+  bool seen[2048] = {};
+  for (uint32_t d1 : doubles) {
+    for (uint32_t p2 : pauses) {
+      for (uint32_t d3 : doubles) {
+        const uint32_t targets[3] = {d1, p2, d3};
         Pair p;
         uint32_t now = 0;
         bool emitted = false;
         feedStill(p, now, 2100);
         feedImpulse(p, now, emitted);
-        feedStill(p, now, g1);
-        feedImpulse(p, now, emitted);
-        feedStill(p, now, g2);
-        feedImpulse(p, now, emitted);
-        feedStill(p, now, g3);
-        feedImpulse(p, now, emitted);
+        TEST_ASSERT_EQUAL_UINT32(1, p.impulses);
+        for (uint32_t k = 0; k < 3; ++k) {
+          const uint32_t prev_end = p.last_impulse_ms;
+          const uint32_t before = p.impulses;
+          // Next impulse must END exactly targets[k] after the previous end.
+          feedStillUntil(p, now, prev_end + targets[k] - kImpulseEndOffsetMs);
+          feedImpulse(p, now, emitted);
+          TEST_ASSERT_EQUAL_UINT32(before + 1, p.impulses);
+          const uint32_t interval = p.last_impulse_ms - prev_end;
+          TEST_ASSERT_EQUAL_UINT32(targets[k], interval);
+          seen[interval] = true;
+        }
+        const bool expect_click =
+            in_double(d1) && in_pause(p2) && in_double(d3);
+        TEST_ASSERT_EQUAL_UINT32(expect_click ? 1 : 0, p.clicks);
+        TEST_ASSERT_EQUAL(expect_click, emitted);
+        // Tail: an impulse after the click refractory and one more double.
         feedStill(p, now, 1600);
         feedImpulse(p, now, emitted);
         feedStill(p, now, 400);
         feedImpulse(p, now, emitted);
+        TEST_ASSERT_EQUAL_UINT32(expect_click ? 1 : 0, p.clicks);
+        ++combos;
+        clicking_combos += expect_click ? 1 : 0;
       }
     }
+  }
+  TEST_ASSERT_EQUAL_UINT32(6 * 9 * 6, combos);
+  TEST_ASSERT_EQUAL_UINT32(4 * 5 * 4, clicking_combos);
+  // Non-vacuity: every boundary interval was observed end to end.
+  const uint32_t required[] = {340, 699,  700,  701, 799,
+                               800, 801, 1399, 1400, 1401};
+  for (uint32_t r : required) {
+    TEST_ASSERT_TRUE_MESSAGE(seen[r], "a boundary interval was never produced");
   }
 }
 
@@ -372,6 +544,7 @@ CV2_UNITY_MAIN(
   RUN_TEST(test_fuzz_200k_samples_5ms_cadence);
   RUN_TEST(test_fuzz_second_seed);
   RUN_TEST(test_fuzz_across_timestamp_wrap);
+  RUN_TEST(test_wrap_slides_through_coded_pattern);
   RUN_TEST(test_fuzz_many_seeds);
   RUN_TEST(test_boundary_gap_sweep);
 )

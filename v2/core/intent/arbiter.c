@@ -53,6 +53,39 @@ void cv2_intent_heartbeat(cv2_intent_state_t *st, uint16_t producer_id,
   st->fault_flags[producer_id] = fault_flags;
 }
 
+/* Pins *t_ms at the memory horizon once it has fallen behind it, or once the
+ * signed distance has inverted (a stamp that reads as "future" is either a
+ * skewed clock or > 2^31 ms old; both are treated as the older-than-any-
+ * window case, fail closed). Every predicate below then compares distances
+ * inside CV2_MS_DIFF's valid range. */
+static void age_ms(cv2_ms_t *t_ms, cv2_ms_t now_ms) {
+  const int32_t d = CV2_MS_DIFF(now_ms, *t_ms);
+  if (d < 0 || d > (int32_t)CV2_INTENT_STATE_HORIZON_MS) {
+    *t_ms = now_ms - (cv2_ms_t)CV2_INTENT_STATE_HORIZON_MS;
+  }
+}
+
+/* Only stamps flagged valid are aged; a pinned stamp keeps its meaning:
+ * liveness / queue latch stay timed out and latched, ordering keeps its seq
+ * memory while any fresh t_ms is still "after" it, and a pinned click is
+ * outside every cooldown (horizon > uint16 cooldown_ms). */
+static void age_state(cv2_intent_state_t *st, cv2_ms_t now_ms) {
+  for (size_t i = 0; i < (size_t)CV2_PRODUCER_COUNT; ++i) {
+    if (st->seen[i]) {
+      age_ms(&st->last_seen_ms[i], now_ms);
+    }
+    if (st->ordered[i]) {
+      age_ms(&st->last_t_ms[i], now_ms);
+    }
+  }
+  if (st->have_action) {
+    age_ms(&st->last_action_ms, now_ms);
+  }
+  if (st->queue_latched) {
+    age_ms(&st->queue_fault_ms, now_ms);
+  }
+}
+
 static cv2_action_t fault_action(cv2_intent_state_t *st, uint8_t fault) {
   cv2_action_t a;
   a.kind = (uint8_t)CV2_INTENT_NONE;
@@ -157,6 +190,10 @@ cv2_action_t cv2_intent_arbitrate(cv2_intent_state_t *st,
   if (st == NULL || ctx == NULL || cfg == NULL) {
     return fault_action(st, (uint8_t)CV2_FAULT_MALFORMED);
   }
+
+  /* 0. Age every stored timestamp so no comparison below can see a distance
+   *    of 2^31 ms or more (CV2_INTENT_STATE_HORIZON_MS). */
+  age_state(st, now_ms);
 
   /* 1. Context. Unsafe context: release, remember, and never look at the
    *    event (a disarmed device must not even refresh producer liveness). */

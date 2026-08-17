@@ -1,7 +1,9 @@
 /*
  * Profile oracle: defaults validate; every header/CRC/range/mask corruption is
- * refused; a failed load never touches the caller's struct; the CRC is the
- * IEEE one and is only corruption detection.
+ * refused (including the values that would silently disable a safety gate:
+ * zero windows, infinite floats, nonzero reserved bytes); a failed load never
+ * touches the caller's struct; the CRC is the IEEE one and is only corruption
+ * detection.
  */
 #include <string.h>
 
@@ -155,6 +157,144 @@ static void test_zero_confidence_and_nan_rejected(void) {
                         cv2_profile_validate(&p, sizeof p));
 }
 
+/* Every safety-envelope window must be > 0: a zero cooldown lets a click
+ * follow a click (and the queue latch clear in the same ms), zero refractory
+ * or quiet-gate windows let a burst be counted as a pattern, a zero freshness
+ * bound is a contradiction. */
+static void test_zero_gate_windows_rejected(void) {
+  cv2_profile_t p;
+  cv2_profile_defaults(&p);
+  p.intent.cooldown_ms = 0u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.intent.max_event_age_ms = 0u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.intent.producer_timeout_ms = 0u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.blink_dsp.head_motion_suppression_ms = 0u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.blink_dsp.impulse_refractory_ms = 0u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.blink_code.click_refractory_ms = 0u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  /* 1 ms is the documented minimum for each of them. */
+  cv2_profile_defaults(&p);
+  p.intent.cooldown_ms = 1u;
+  p.intent.max_event_age_ms = 1u;
+  p.intent.producer_timeout_ms = 1u;
+  p.blink_dsp.head_motion_suppression_ms = 1u;
+  p.blink_dsp.impulse_refractory_ms = 1u;
+  p.blink_code.click_refractory_ms = 1u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OK, cv2_profile_validate(&p, sizeof p));
+}
+
+/* +inf passes every ordering comparison, so it must be refused explicitly
+ * for each float, in each direction that the ordering allows. */
+static void test_infinite_floats_rejected(void) {
+  const uint32_t pos_inf_bits = 0x7F800000u;
+  const uint32_t neg_inf_bits = 0xFF800000u;
+  float pos_inf;
+  float neg_inf;
+  memcpy(&pos_inf, &pos_inf_bits, sizeof pos_inf);
+  memcpy(&neg_inf, &neg_inf_bits, sizeof neg_inf);
+  cv2_profile_t p;
+
+  cv2_profile_defaults(&p);
+  p.blink_dsp.baseline_time_constant_ms = pos_inf;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.blink_dsp.impulse_enter_dps = pos_inf;
+  p.blink_dsp.maximum_head_rate_dps = pos_inf;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.blink_dsp.maximum_head_rate_dps = pos_inf; /* head gate never trips */
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.blink_dsp.impulse_exit_dps = neg_inf; /* fails > 0 already; stays out */
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.motion.pixels_per_degree = pos_inf;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.motion.deadzone_dps = pos_inf;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  const uint32_t nan_bits = 0x7FC00000u;
+  memcpy(&p.motion.low_pass_alpha, &nan_bits, sizeof nan_bits);
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  /* Large but finite values are still in range. */
+  cv2_profile_defaults(&p);
+  p.blink_dsp.maximum_head_rate_dps = 3.0e38f;
+  p.motion.pixels_per_degree = 3.0e38f;
+  p.motion.deadzone_dps = 3.0e38f;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OK, cv2_profile_validate(&p, sizeof p));
+}
+
+/* Reserved bytes are zero in version 1, in the header and in each unit. */
+static void test_nonzero_reserved_bytes_rejected(void) {
+  cv2_profile_t p;
+  cv2_profile_defaults(&p);
+  p.reserved[1] = 1u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.intent.reserved = 0x80u;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  cv2_profile_defaults(&p);
+  p.motion.reserved[2] = 0xFFu;
+  reseal(&p);
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_validate(&p, sizeof p));
+  /* Through the blob as well: byte 9 is header reserved[0]. */
+  cv2_profile_defaults(&p);
+  uint8_t blob[CV2_PROFILE_SIZE];
+  cv2_profile_encode(&p, blob, sizeof blob);
+  blob[9] = 1u;
+  const uint32_t crc = cv2_crc32(blob, 92u);
+  blob[92] = (uint8_t)(crc & 0xFFu);
+  blob[93] = (uint8_t)((crc >> 8) & 0xFFu);
+  blob[94] = (uint8_t)((crc >> 16) & 0xFFu);
+  blob[95] = (uint8_t)(crc >> 24);
+  cv2_profile_t out;
+  TEST_ASSERT_EQUAL_INT(CV2_PROFILE_OUT_OF_RANGE,
+                        cv2_profile_load(blob, sizeof blob, &out));
+}
+
 static void test_unknown_producer_bit_never_enabled(void) {
   cv2_profile_t p;
   cv2_profile_defaults(&p);
@@ -234,6 +374,9 @@ CV2_UNITY_MAIN(
   RUN_TEST(test_enter_not_above_exit_rejected);
   RUN_TEST(test_double_max_reaching_pause_min_rejected);
   RUN_TEST(test_zero_confidence_and_nan_rejected);
+  RUN_TEST(test_zero_gate_windows_rejected);
+  RUN_TEST(test_infinite_floats_rejected);
+  RUN_TEST(test_nonzero_reserved_bytes_rejected);
   RUN_TEST(test_unknown_producer_bit_never_enabled);
   RUN_TEST(test_load_leaves_out_untouched_on_failure);
   RUN_TEST(test_encoded_blob_matches_documented_layout);

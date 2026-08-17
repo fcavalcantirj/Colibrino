@@ -5,8 +5,10 @@
  * published only after magic, version, size, CRC, value ranges and the
  * producer mask all validate. Range rules keep every unit's invariants
  * (impulse exit < enter <= head gate, double window below the pause window,
- * a positive confidence floor) so a corrupted-but-CRC-valid profile written
- * by buggy tooling still cannot disable a safety gate.
+ * a positive confidence floor, finite floats, no zero-length gate window -
+ * quiet gate, refractories, cooldown, freshness bound - and zero reserved
+ * bytes) so a corrupted-but-CRC-valid profile written by buggy tooling still
+ * cannot disable a safety gate.
  */
 #include "colibrino/v2/profile.h"
 
@@ -182,8 +184,27 @@ size_t cv2_profile_encode(const cv2_profile_t *p, uint8_t *buf, size_t cap) {
   return CV2_PROFILE_SIZE;
 }
 
-/* Comparisons are written so that NaN fails them (NaN < x is false). */
+/* Finite IEEE-754 single (rejects NaN and +-inf): exponent field not all
+ * ones. Read byte-wise through the same helper the codec uses so the answer
+ * does not depend on <math.h> or on floating-point compiler flags. */
+static bool finite_f32(float v) {
+  uint8_t b[4];
+  cv2_le_put_f32(b, v);
+  return (b[3] & 0x7Fu) != 0x7Fu || (b[2] & 0x80u) == 0u;
+}
+
+/* Every float must be finite (an infinite threshold or time constant is a
+ * disabled gate that the ordering comparisons below would let through), and
+ * every window that closes a gate must be open for at least 1 ms: the head
+ * motion quiet gate, the impulse refractory, the click refractory and the
+ * click cooldown are what keep a burst from becoming a click. Comparisons
+ * are written so that NaN fails them (NaN < x is false). */
 static bool dsp_in_range(const cv2_blink_dsp_config_t *c) {
+  if (!finite_f32(c->baseline_time_constant_ms) ||
+      !finite_f32(c->impulse_enter_dps) || !finite_f32(c->impulse_exit_dps) ||
+      !finite_f32(c->maximum_head_rate_dps)) {
+    return false;
+  }
   if (!(c->baseline_time_constant_ms > 0.0f)) {
     return false;
   }
@@ -196,10 +217,16 @@ static bool dsp_in_range(const cv2_blink_dsp_config_t *c) {
   if (!(c->impulse_enter_dps <= c->maximum_head_rate_dps)) {
     return false;
   }
+  if (c->head_motion_suppression_ms == 0u) {
+    return false;
+  }
   if (c->impulse_minimum_ms > c->impulse_maximum_ms) {
     return false;
   }
   if (c->impulse_maximum_ms == 0u) {
+    return false;
+  }
+  if (c->impulse_refractory_ms == 0u) {
     return false;
   }
   return true;
@@ -216,9 +243,13 @@ static bool code_in_range(const cv2_blink_code_config_t *c) {
   if (c->double_blink_maximum_ms >= c->deliberate_pause_minimum_ms) {
     return false;
   }
+  if (c->click_refractory_ms == 0u) {
+    return false;
+  }
   return true;
 }
 
+/* The intent limits are the safety envelope: none of them may be zero. */
 static bool intent_in_range(const cv2_intent_config_t *c) {
   if (c->min_confidence == 0u) {
     return false;
@@ -226,10 +257,23 @@ static bool intent_in_range(const cv2_intent_config_t *c) {
   if (c->producer_timeout_ms == 0u) {
     return false;
   }
+  if (c->cooldown_ms == 0u) {
+    return false;
+  }
+  if (c->max_event_age_ms == 0u) {
+    return false;
+  }
+  if (c->reserved != 0u) {
+    return false;
+  }
   return true;
 }
 
 static bool motion_in_range(const cv2_motion_config_t *c) {
+  if (!finite_f32(c->deadzone_dps) || !finite_f32(c->pixels_per_degree) ||
+      !finite_f32(c->low_pass_alpha)) {
+    return false;
+  }
   if (c->horizontal_axis > 2u || c->vertical_axis > 2u) {
     return false;
   }
@@ -251,6 +295,9 @@ static bool motion_in_range(const cv2_motion_config_t *c) {
   if (c->max_report <= 0) {
     return false;
   }
+  if (c->reserved[0] != 0u || c->reserved[1] != 0u || c->reserved[2] != 0u) {
+    return false;
+  }
   return true;
 }
 
@@ -269,6 +316,10 @@ cv2_profile_status_t cv2_profile_validate(const cv2_profile_t *p, size_t len) {
   }
   if (p->crc32 != cv2_profile_crc(p)) {
     return CV2_PROFILE_BAD_CRC;
+  }
+  /* Reserved bytes are part of the version-1 contract: zero. */
+  if (p->reserved[0] != 0u || p->reserved[1] != 0u || p->reserved[2] != 0u) {
+    return CV2_PROFILE_OUT_OF_RANGE;
   }
   if (!dsp_in_range(&p->blink_dsp) || !code_in_range(&p->blink_code) ||
       !intent_in_range(&p->intent) || !motion_in_range(&p->motion)) {
