@@ -22,6 +22,7 @@ import random
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -114,13 +115,15 @@ def emit_session(lines, ms: int, spec) -> int:
     return ms + 5000
 
 
-def build_synthetic_log(path: str):
-    """Four probe sessions:
+def build_synthetic_log(path: str, with_v2: bool = False):
+    """Four probe sessions (five with `with_v2`):
 
     s1 quiet everywhere                     (R0 slot under plan A)
     s2 two coded patterns in BLINK -> PASS  (V1 slot)
     s3 hard singles at cue+250 ms, cue 5 missing, cue 6 doubled (HB1 slot)
     s4 coded pattern in STILL + two in BLINK -> control violation (U slot)
+    s5 (optional) two coded patterns in BLINK -> PASS (V2 slot after the
+       BREAK_REMOUNT marker, which the capture tool auto-completes)
     """
     lines = []
     for k in range(65):  # boot STATUS block, 1 Hz from 1.03 s
@@ -147,9 +150,40 @@ def build_synthetic_log(path: str):
             "expected": (1, 2, 0),
         },
     )
+    if with_v2:
+        ms = emit_session(
+            lines,
+            ms,
+            {"KEEP_HEAD_STILL": quiet, "BLINK_FIRMLY": ("quiet", coded_pattern(2500) + coded_pattern(8000)), "MOVE_HEAD": sweep, "expected": (0, 2, 0)},
+        )
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
+
+
+def as_live_capture(sim_dir: str, dest_root: str, stamp: str = "20260901T000000") -> str:
+    """[TEST] Reshape a --simulate output into a live-shaped capture directory.
+
+    Same raw bytes, markers and run mapping; only session.json `mode` becomes
+    "live" (with a redacted-identity block instead of simulated_source) and the
+    directory takes a live capture name. This is how the tests exercise the
+    live-only paths (cue refinement, promotion of clean fixtures, worn
+    acceptance) without a device.
+    """
+    dest = os.path.join(dest_root, f"capture-{stamp}")
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    shutil.copytree(sim_dir, dest)
+    session_path = os.path.join(dest, "session.json")
+    with open(session_path, "r", encoding="utf-8") as handle:
+        session = json.load(handle)
+    session["mode"] = "live"
+    session["simulated_source"] = None
+    session["identity"] = {"vid": "0x303a", "pid": "0x1001", "manufacturer": cc.USB_MANUFACTURER, "product": cc.USB_PRODUCT, "serial_last4": "0000", "serial_length": 12, "port_basename": "cu.test"}
+    session["capture_dir"] = os.path.basename(dest)
+    with open(session_path, "w", encoding="utf-8") as handle:
+        handle.write(cc.json_dumps_stable(session))
+    return dest
 
 
 def run_cli(module_main, argv):
@@ -175,7 +209,10 @@ class CaptureToolsBase(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="colibrino-capture-tests-")
         cls.replay_bin = os.path.join(cls.tmp, "replay_imu_capture")
         cc.build_replay_tool(cls.replay_bin, STICKS3_DIR)
-        cls.synthetic_log = build_synthetic_log(os.path.join(cls.tmp, "synthetic-device-monitor.log"))
+        # The date in the name is what a simulated capture must report as its
+        # capture_date (the rehearsal day never is).
+        cls.synthetic_log = build_synthetic_log(os.path.join(cls.tmp, "synthetic-device-monitor-260901-000000.log"))
+        cls.synthetic_log_v2 = build_synthetic_log(os.path.join(cls.tmp, "synthetic-device-monitor-260902-000000-v2.log"), with_v2=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -288,17 +325,83 @@ class TestDeidGuard(unittest.TestCase):
         self.assertEqual(cc.deid_scan(clean), [])
 
 
+class TestSerialGuard(unittest.TestCase):
+    def test_open_verified_port_asserts_dtr_rts_and_never_writes(self):
+        """[TEST] The firmware's TinyUSB CDC only transmits while the host holds
+        DTR, so the port must be opened like `pio device monitor`: 115200,
+        DTR/RTS asserted once, nothing written, no toggling after open."""
+
+        events = []
+
+        class StubSerial:
+            def __init__(self):
+                self.port = None
+                self.baudrate = None
+                self.timeout = None
+                self.is_open = False
+                self._dtr = None
+                self._rts = None
+
+            @property
+            def dtr(self):
+                return self._dtr
+
+            @dtr.setter
+            def dtr(self, value):
+                events.append(("dtr", value, self.is_open))
+                self._dtr = value
+
+            @property
+            def rts(self):
+                return self._rts
+
+            @rts.setter
+            def rts(self, value):
+                events.append(("rts", value, self.is_open))
+                self._rts = value
+
+            def open(self):
+                events.append(("open", self.baudrate, self._dtr, self._rts))
+                self.is_open = True
+
+            def write(self, data):
+                events.append(("write", data))
+                raise AssertionError("capture tool must never write to the device")
+
+        saved = capture_session.serial
+        capture_session.serial = types.SimpleNamespace(Serial=StubSerial)
+        try:
+            ser = capture_session.open_verified_port({"device": "stub-port"})
+        finally:
+            capture_session.serial = saved
+        self.assertTrue(ser.is_open)
+        self.assertEqual(ser.baudrate, 115200)
+        self.assertIs(ser.dtr, True)
+        self.assertIs(ser.rts, True)
+        self.assertIn(("open", 115200, True, True), events)
+        self.assertFalse([e for e in events if e[0] == "write"])
+        # No modem-line change after open (that sequence is the ESP32-S3 reset dance).
+        after_open = events[events.index(("open", 115200, True, True)) + 1 :]
+        self.assertEqual([e for e in after_open if e[0] in ("dtr", "rts")], [])
+        self.assertNotIn("1200", str(events))
+
+
 class TestSimulateAndFixtures(CaptureToolsBase):
-    def _simulate(self, log_path: str, plan: bool, name: str) -> str:
+    def _simulate(self, log_path: str, plan: bool, name: str, plan_session: str = "A") -> str:
         out_root = os.path.join(self.tmp, name)
         argv = ["--simulate", log_path, "--no-audio", "--no-keys", "--quiet", "--sim-speed", "0", "--out-dir", out_root]
         if plan:
-            argv += ["--plan", PLAN_PATH, "--plan-session", "A"]
+            argv += ["--plan", PLAN_PATH, "--plan-session", plan_session]
         code, out, err = run_cli(capture_session.main, argv)
         self.assertEqual(code, 0, err + out)
         dirs = [d for d in os.listdir(out_root) if d.startswith("capture-sim-")]
         self.assertEqual(len(dirs), 1)
         return os.path.join(out_root, dirs[0])
+
+    def _live(self, log_path: str, name: str, plan_session: str = "A", stamp: str = "20260901T000000") -> str:
+        """Simulate, then reshape into a live-shaped capture directory."""
+        sim_dir = self._simulate(log_path, plan=True, name=name + "-sim", plan_session=plan_session)
+        return as_live_capture(sim_dir, os.path.join(self.tmp, name), stamp)
 
     def test_simulate_writes_capture_directory_and_runs(self):
         capture_dir = self._simulate(self.synthetic_log, plan=True, name="sim-plan")
@@ -309,6 +412,8 @@ class TestSimulateAndFixtures(CaptureToolsBase):
         with open(os.path.join(capture_dir, "session.json"), "r", encoding="utf-8") as handle:
             session = json.load(handle)
         self.assertEqual(session["mode"], "simulate")
+        self.assertEqual(session["simulated_source"]["basename"], os.path.basename(self.synthetic_log))
+        self.assertEqual(session["simulated_source"]["sha256"], cc.sha256_file(self.synthetic_log))
         self.assertEqual(session["probe_sessions"], 4)
         self.assertTrue(session["boot"]["seen"])
         self.assertTrue(session["boot"]["boot_ok"])
@@ -331,6 +436,15 @@ class TestSimulateAndFixtures(CaptureToolsBase):
         u_cues = [c for c in cues if c["run_id"] == "U"]
         self.assertEqual(len(u_cues), 8)
 
+    def test_simulate_five_sessions_lands_v2_after_break_marker(self):
+        capture_dir = self._simulate(self.synthetic_log_v2, plan=True, name="sim-plan-v2")
+        with open(os.path.join(capture_dir, "session.json"), "r", encoding="utf-8") as handle:
+            session = json.load(handle)
+        by_id = {run["run_id"]: run for run in session["runs"]}
+        self.assertEqual(by_id["BREAK_REMOUNT"]["status"], "done")
+        self.assertEqual(by_id["V2"]["attempts"][0]["session_index"], 5)
+        self.assertEqual(by_id["V2"]["attempts"][0]["result"]["verdict"], "PASS")
+
     def test_simulate_without_plan_names_runs_sim_n(self):
         capture_dir = self._simulate(self.synthetic_log, plan=False, name="sim-noplan")
         with open(os.path.join(capture_dir, "session.json"), "r", encoding="utf-8") as handle:
@@ -338,7 +452,7 @@ class TestSimulateAndFixtures(CaptureToolsBase):
         self.assertEqual([r["run_id"] for r in session["runs"]], ["SIM-1", "SIM-2", "SIM-3", "SIM-4"])
 
     def test_fixture_determinism_and_tsv_derivation(self):
-        capture_dir = self._simulate(self.synthetic_log, plan=True, name="sim-fixture")
+        capture_dir = self._live(self.synthetic_log, name="live-fixture")
         digests = []
         for attempt in ("a", "b"):
             out = os.path.join(self.tmp, f"fixtures-{attempt}")
@@ -352,13 +466,18 @@ class TestSimulateAndFixtures(CaptureToolsBase):
         for name in os.listdir(out):
             if not name.endswith(".labels.json"):
                 continue
+            self.assertNotIn("-sim.", name)
             with open(os.path.join(out, name), "r", encoding="utf-8") as handle:
                 labels = json.load(handle)
             self.assertEqual(labels["schema"], "colibrino-v2-trace-labels/1")
+            self.assertEqual(labels["capture"]["capture_date"], "2026-09-01")  # from the live directory stamp
             self.assertIn(labels["capture"]["run_kind"], cc.RUN_KINDS)
             self.assertIn(labels["capture"]["mount"], cc.MOUNTS)
             self.assertIn(labels["provenance"]["labeler"], cc.LABELERS)
             self.assertTrue(labels["provenance"]["deidentified"])
+            self.assertFalse(labels["provenance"]["simulated"])
+            self.assertEqual(labels["provenance"]["source_kind"], "capture-session")
+            self.assertEqual(labels["provenance"]["capture_mode"], "live")
             self.assertIsNone(labels["provenance"]["cleared_on"])
             self.assertEqual(labels["harness"]["preroll_ms"], 2000)
             for seg in labels["segments"]:
@@ -373,7 +492,7 @@ class TestSimulateAndFixtures(CaptureToolsBase):
                 header = handle.readline().rstrip("\n")
                 self.assertEqual(header, mtf.CSV_HEADER)
         # Cue refinement on the HB1 session: 4 ok, 1 missed, 1 ambiguous => review required.
-        with open(os.path.join(out, "20260817-s3-blink_firmly-hb_hard_singles.labels.json".replace("20260817", labels["capture"]["capture_date"].replace("-", ""))), "r", encoding="utf-8") as handle:
+        with open(os.path.join(out, "20260901-s3-blink_firmly-hb_hard_singles.labels.json"), "r", encoding="utf-8") as handle:
             hb = json.load(handle)
         statuses = [r["refine_status"] for r in hb["cue_refinement"]]
         self.assertEqual(statuses[:4], ["ok"] * 4)
@@ -382,42 +501,128 @@ class TestSimulateAndFixtures(CaptureToolsBase):
         self.assertTrue(hb["review_required"])
         for r in hb["cue_refinement"][:4]:
             self.assertLessEqual(abs(r["peak_ms"] - (r["cue_ms"] + 250)), 15)
+        self.assertEqual(len([seg for seg in hb["segments"] if "cue_ms" in seg]), 6)
+        # Six cues each expecting one impulse, but the detector accepted fewer: flagged.
+        self.assertTrue(any("per-cue IMPULSE" in reason for reason in hb["review_reasons"]), hb["review_reasons"])
         self.assertIn("REVIEW REQUIRED", stdout)
-        # V1 fixture: no cues, coded_pattern ge 2, replay parity match, no review needed.
-        with open(os.path.join(out, hb["name"].replace("s3-blink_firmly-hb_hard_singles", "s2-blink_firmly-v_standard") + ".labels.json"), "r", encoding="utf-8") as handle:
+        # V1 fixture: no cues, coded_pattern ge 2 satisfied by replay (2), parity match, no review needed.
+        with open(os.path.join(out, "20260901-s2-blink_firmly-v_standard.labels.json"), "r", encoding="utf-8") as handle:
             v1 = json.load(handle)
         self.assertEqual(v1["capture"]["run_id"], "V1")
         self.assertEqual(v1["replay"]["parity"], "match")
+        self.assertEqual(v1["replay"]["stage_sequences"], 2)
         self.assertFalse(v1["review_required"], v1["review_reasons"])
         self.assertEqual(v1["segments"][0]["expect"], {"CLICK_CANDIDATE": {"ge": 2}})
+        # U fixture: plan expects CLICK_CANDIDATE eq 0 over the whole stage but the replay
+        # found two coded sequences -> whole-stage contradiction must be flagged.
+        with open(os.path.join(out, "20260901-s4-blink_firmly-u_uniform_four.labels.json"), "r", encoding="utf-8") as handle:
+            u = json.load(handle)
+        self.assertTrue(u["review_required"])
+        self.assertTrue(any("whole-stage expect CLICK_CANDIDATE eq 0 but replay sequences=2" in r for r in u["review_reasons"]), u["review_reasons"])
+        with open(os.path.join(out, "20260901-s4-keep_head_still-u_uniform_four.labels.json"), "r", encoding="utf-8") as handle:
+            u_still = json.load(handle)
+        self.assertTrue(any("eq 0 but replay sequences=1" in r for r in u_still["review_reasons"]), u_still["review_reasons"])
+
+    def test_whole_stage_expectation_contradicting_replay_is_flagged(self):
+        # Direct check of the label-vs-replay rule, including the V-run case
+        # (coded_pattern ge 2) over data with zero coded sequences.
+        seg_whole = mtf._segment("blink_firmly-whole", "coded_pattern", 1000, 16000, {"CLICK_CANDIDATE": {"ge": 2}}, 0, "instruction-window")
+        seg_window = mtf._segment("first-half", "coded_pattern", 1000, 8000, {"CLICK_CANDIDATE": {"eq": 0}}, 0, "instruction-window")
+        cue_a = mtf._segment("cue-hb1", "hard_blink", 1500, 1850, {"IMPULSE": {"eq": 1}}, 100, "instruction-window", cue_ms=1400.0, peak_ms=1600, refine_status="ok")
+        cue_b = mtf._segment("cue-hb2", "hard_blink", 3000, 3350, {"IMPULSE": {"eq": 1}}, 100, "instruction-window", cue_ms=2900.0, peak_ms=None, refine_status="missed")
+        reasons = mtf.replay_consistency_reasons([seg_whole, seg_window, cue_a, cue_b], 1000, 16000, {"samples": 2500, "impulses": 1, "sequences": 0})
+        self.assertEqual(len(reasons), 2, reasons)
+        self.assertIn("whole-stage expect CLICK_CANDIDATE ge 2 but replay sequences=0", reasons[0])
+        self.assertIn("need >= 2 impulses but replay impulses=1", reasons[1])
+        # Satisfied expectations produce nothing; sub-stage windows are not judged.
+        self.assertEqual(mtf.replay_consistency_reasons([seg_whole, seg_window, cue_a, cue_b], 1000, 16000, {"samples": 2500, "impulses": 2, "sequences": 3}), [])
+        self.assertEqual(mtf.replay_consistency_reasons([seg_whole], 1000, 16000, None), [])
+        eq_zero = mtf._segment("keep_head_still-whole", "rest", 0, 6000, {"CLICK_CANDIDATE": {"eq": 0}}, 0, "instruction-window")
+        self.assertEqual(mtf.replay_consistency_reasons([eq_zero], 0, 6000, {"samples": 1000, "impulses": 4, "sequences": 1}), ["segment keep_head_still-whole: whole-stage expect CLICK_CANDIDATE eq 0 but replay sequences=1"])
+        # A window that happens to span the whole stage is judged too.
+        span = mtf._segment("all", "confounder", 0, 6000, {"CLICK_CANDIDATE": {"le": 0}}, 250, "instruction-window")
+        self.assertEqual(len(mtf.replay_consistency_reasons([span], 0, 6000, {"samples": 1000, "impulses": 0, "sequences": 2})), 1)
+
+    def test_simulated_capture_fixtures_are_marked_and_dated_from_source(self):
+        capture_dir = self._simulate(self.synthetic_log, plan=True, name="sim-marked")
+        out = os.path.join(self.tmp, "fixtures-sim-marked")
+        code, stdout, stderr = run_cli(mtf.main, [capture_dir, "--out", out, "--replay-bin", self.replay_bin])
+        self.assertEqual(code, 0, stderr + stdout)
+        self.assertIn("SIMULATED capture", stdout)
+        names = sorted(os.listdir(out))
+        self.assertEqual(len(names), 12 * 3)
+        for name in names:
+            self.assertTrue(name.startswith("20260901-"), name)  # source log date, not the rehearsal date
+            self.assertRegex(name, r"-sim\.(csv|labels\.json|labels\.tsv)$")
+        with open(os.path.join(out, "20260901-s3-blink_firmly-hb_hard_singles-sim.labels.json"), "r", encoding="utf-8") as handle:
+            hb = json.load(handle)
+        self.assertEqual(hb["capture"]["capture_date"], "2026-09-01")
+        self.assertTrue(hb["provenance"]["simulated"])
+        self.assertEqual(hb["provenance"]["source_kind"], "capture-session-simulated")
+        self.assertEqual(hb["provenance"]["capture_mode"], "simulate")
+        self.assertEqual(hb["provenance"]["simulated_source_sha256"], cc.sha256_file(self.synthetic_log))
+        self.assertEqual(hb["cue_refinement"], [])
+        self.assertEqual([seg["name"] for seg in hb["segments"]], ["blink_firmly-whole"])
+        self.assertTrue(hb["review_required"])
+        self.assertTrue(any(reason.startswith("simulated capture") for reason in hb["review_reasons"]), hb["review_reasons"])
+        with open(os.path.join(out, "20260901-s2-blink_firmly-v_standard-sim.labels.json"), "r", encoding="utf-8") as handle:
+            v1 = json.load(handle)
+        self.assertTrue(v1["review_required"])
+        # Promotion is refused for rehearsal fixtures even after a "review".
+        v1["review_required"] = False
+        v1["review_reasons"] = []
+        v1["provenance"]["labeler"] = "owner"
+        v1["provenance"]["cleared_on"] = "2026-09-01"
+        with open(os.path.join(out, v1["name"] + ".labels.json"), "w", encoding="utf-8") as handle:
+            handle.write(cc.json_dumps_stable(v1))
+        with open(os.path.join(out, v1["name"] + ".labels.tsv"), "w", encoding="utf-8") as handle:
+            handle.write(mtf.derive_tsv(v1))
+        dest = os.path.join(self.tmp, "promoted-sim")
+        code, stdout, stderr = run_cli(mtf.main, ["--promote", v1["name"], "--out", out, "--dest", dest])
+        self.assertNotEqual(code, 0)
+        self.assertIn("provenance.simulated is true", stderr)
+        self.assertFalse(os.path.exists(dest))
+        # A simulated source whose name carries no date must be told explicitly.
+        undated = os.path.join(self.tmp, "undated-synthetic.log")
+        shutil.copyfile(self.synthetic_log, undated)
+        undated_dir = self._simulate(undated, plan=True, name="sim-undated")
+        code, stdout, stderr = run_cli(mtf.main, [undated_dir, "--out", os.path.join(self.tmp, "fixtures-undated"), "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertIn("cannot derive capture date", stderr)
+        self.assertIn("simulated capture", stderr)
+        code, stdout, stderr = run_cli(mtf.main, [undated_dir, "--out", os.path.join(self.tmp, "fixtures-undated"), "--replay-bin", self.replay_bin, "--capture-date", "2026-08-01"])
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(all(n.startswith("20260801-") and "-sim." in n for n in os.listdir(os.path.join(self.tmp, "fixtures-undated"))))
 
     def test_promotion_refuses_review_required(self):
-        capture_dir = self._simulate(self.synthetic_log, plan=True, name="sim-promote")
+        capture_dir = self._live(self.synthetic_log, name="live-promote")
         out = os.path.join(self.tmp, "fixtures-promote")
         code, stdout, stderr = run_cli(mtf.main, [capture_dir, "--out", out, "--replay-bin", self.replay_bin])
         self.assertEqual(code, 0, stderr)
-        hb_name = next(n[:-len(".labels.json")] for n in os.listdir(out) if n.endswith("hb_hard_singles.labels.json") and "blink_firmly" in n)
+        hb_name = "20260901-s3-blink_firmly-hb_hard_singles"
         dest = os.path.join(self.tmp, "promoted")
         code, stdout, stderr = run_cli(mtf.main, ["--promote", hb_name, "--out", out, "--dest", dest])
         self.assertNotEqual(code, 0)
         self.assertIn("review_required is true", stderr)
         self.assertFalse(os.path.exists(os.path.join(dest, hb_name + ".csv")))
         # A clean fixture still refuses while the labeler is "agent" and cleared_on is null.
-        v1_name = hb_name.replace("s3-blink_firmly-hb_hard_singles", "s2-blink_firmly-v_standard")
+        v1_name = "20260901-s2-blink_firmly-v_standard"
         code, stdout, stderr = run_cli(mtf.main, ["--promote", v1_name, "--out", out, "--dest", dest])
         self.assertNotEqual(code, 0)
+        self.assertNotIn("review_required is true", stderr)
+        self.assertNotIn("simulated", stderr)
         self.assertIn("labeler is still 'agent'", stderr)
         self.assertIn("cleared_on is null", stderr)
 
     def test_deid_guard_refuses_cli_output(self):
-        # A synthetic capture whose cue tag carries the device hostname must be refused
-        # before anything is written.
-        capture_dir = os.path.join(self.tmp, "capture-sim-20260817T000000-red")
+        # A synthetic live-shaped capture whose cue tag carries the device hostname
+        # must be refused before anything is written.
+        capture_dir = os.path.join(self.tmp, "capture-20260901T000000-red")
         os.makedirs(capture_dir, exist_ok=True)
         shutil.copyfile(self.synthetic_log, os.path.join(capture_dir, "raw.log"))
         session = {
             "schema": "colibrino-v2-capture-session/1",
-            "mode": "simulate",
+            "mode": "live",
             "plan": {"path": os.path.relpath(PLAN_PATH, cc.repo_root()), "session_id": "A"},
             "runs": [
                 {"run_id": "R0", "run_kind": "R0_bench", "probe": True, "mount": "bench", "commit_class": "public", "status": "valid", "attempts": [{"attempt": 1, "session_index": 1, "status": "valid"}]},
@@ -437,35 +642,76 @@ class TestSimulateAndFixtures(CaptureToolsBase):
         self.assertNotIn("sticks3-ptt", stdout)
         self.assertFalse(os.path.exists(out) and os.listdir(out), "nothing may be written when the guard fires")
 
-    def test_accept_runs_only_counts_designated_runs(self):
-        plan_dir = self._simulate(self.synthetic_log, plan=True, name="sim-accept-plan")
-        # V1 (session 2) passes; U (session 4) has a still-control violation but is not designated.
-        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1", "--session", plan_dir, "--replay-bin", self.replay_bin])
+    def test_accept_runs_applies_plan_rule_and_only_counts_designated_runs(self):
+        live_a = self._live(self.synthetic_log_v2, name="live-accept-a", stamp="20260902T000000")
+        # V1 (s2) and V2 (s5) both PASS with clean controls: the plan's designated pair => ACCEPT.
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,V2", "--session", live_a, "--replay-bin", self.replay_bin])
         self.assertEqual(code, 0, stdout + stderr)
         self.assertIn("verdict=ACCEPT", stdout)
+        self.assertIn("plan=round1", stdout)
+        self.assertIn('rule="acceptance.designated_runs: one of V1+V2 | V2+V3"', stdout)
+        self.assertRegex(stdout, r"V1\t.*\t0/2/0\tPASS\tPASS")
+        self.assertRegex(stdout, r"V2\t.*\t5\t.*\t0/2/0\tPASS\tPASS")
+        # Order inside the designated set does not matter.
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V2,V1", "--session", live_a, "--replay-bin", self.replay_bin])
+        self.assertEqual(code, 0, stdout)
+        self.assertIn("verdict=ACCEPT", stdout)
+        # A single V run is not a designated set, even though it passes.
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1", "--session", live_a, "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertRegex(stdout, r"V1\t.*\tPASS\tPASS")
+        self.assertIn("RULE: designated set V1 is not one of the plan's acceptance.designated_runs", stdout)
+        self.assertIn("rule_ok=no runs_ok=yes verdict=REJECT", stdout)
         # Designating a run that is not PASS (HB1: no coded sequences) => REJECT even though V1 passes.
-        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,HB1", "--session", plan_dir, "--replay-bin", self.replay_bin])
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,HB1", "--session", live_a, "--replay-bin", self.replay_bin])
         self.assertNotEqual(code, 0)
         self.assertIn("verdict=REJECT", stdout)
         self.assertRegex(stdout, r"HB1\t.*\tFAIL")
         self.assertRegex(stdout, r"V1\t.*\tPASS")
-        # Designating a run with a control violation => REJECT.
-        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "U", "--session", plan_dir, "--replay-bin", self.replay_bin])
+        # Designating a run with a control violation => REJECT (and it is not a designated set either).
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "U", "--session", live_a, "--replay-bin", self.replay_bin])
         self.assertNotEqual(code, 0)
         self.assertRegex(stdout, r"U\t.*\t1/2/0\tNOT_PROVEN\tFAIL")
-        # A designated run without a valid attempt, or unknown to the capture => REJECT.
-        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,V2,V9", "--session", plan_dir, "--replay-bin", self.replay_bin])
+        # A designated run unknown to the capture => MISSING => REJECT.
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V2,V3", "--session", live_a, "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertRegex(stdout, r"V3\t.*\tMISSING")
+        self.assertIn("rule_ok=yes runs_ok=no verdict=REJECT", stdout)
+        # Session A (4 sessions: V2 never ran) => NO_VALID_ATTEMPT => REJECT.
+        live_a4 = self._live(self.synthetic_log, name="live-accept-a4", stamp="20260901T000000")
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,V2", "--session", live_a4, "--replay-bin", self.replay_bin])
         self.assertNotEqual(code, 0)
         self.assertRegex(stdout, r"V2\t.*\tNO_VALID_ATTEMPT")
-        self.assertRegex(stdout, r"V9\t.*\tMISSING")
         self.assertIn("verdict=REJECT", stdout)
-        # Simulated capture without a plan: SIM-1..N naming.
+        # Cross-session pair V2 (A) + V3 (B): V3 lands on the still-violation session under plan B => REJECT.
+        live_b = self._live(self.synthetic_log, name="live-accept-b", plan_session="B", stamp="20260903T000000")
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V2,V3", "--session", live_a, "--session", live_b, "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertRegex(stdout, r"V2\tcapture-20260902T000000\t5\t.*\tPASS")
+        self.assertRegex(stdout, r"V3\tcapture-20260903T000000\t4\t.*\t1/2/0\tNOT_PROVEN\tFAIL")
+        self.assertIn("rule_ok=yes runs_ok=no verdict=REJECT", stdout)
+        # The finding's reproduction: under plan B session 2 is SB (a negative control that
+        # expects 0/0/0). Its data clicks, the run row says PASS, but SB is not designated.
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "SB", "--session", live_b, "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertRegex(stdout, r"SB\t.*\t0/2/0\tPASS\tPASS")
+        self.assertIn("RULE: designated set SB is not one of the plan's acceptance.designated_runs", stdout)
+        self.assertIn("verdict=REJECT", stdout)
+        # Simulated captures can never produce ACCEPT: rehearsal only.
+        sim_a = self._simulate(self.synthetic_log_v2, plan=True, name="sim-accept-plan")
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,V2", "--session", sim_a, "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertIn("SIMULATED capture (rehearsal)", stdout)
+        self.assertIn("rule_ok=yes runs_ok=yes verdict=REHEARSAL", stdout)
+        self.assertNotIn("verdict=ACCEPT", stdout)
+        # Without a plan there is no acceptance rule: REJECT with the reason, table still printed.
         sim_dir = self._simulate(self.synthetic_log, plan=False, name="sim-accept-noplan")
         code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "SIM-2", "--session", sim_dir, "--replay-bin", self.replay_bin])
-        self.assertEqual(code, 0, stdout)
-        self.assertIn("verdict=ACCEPT", stdout)
-        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "SIM-2,SIM-4", "--session", sim_dir, "--replay-bin", self.replay_bin])
         self.assertNotEqual(code, 0)
+        self.assertRegex(stdout, r"SIM-2\t.*\t0/2/0\tPASS\tPASS")
+        self.assertIn("RULE: ", stdout)
+        self.assertIn("no capture plan", stdout)
+        self.assertIn("plan=none", stdout)
         self.assertIn("verdict=REJECT", stdout)
 
 

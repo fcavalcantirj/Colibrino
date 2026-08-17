@@ -11,7 +11,12 @@ Modes
 
 Safety properties
   * The device CDC channel is write-only from the firmware side; this tool
-    never writes to the port, never asserts DTR/RTS and never uses 1200 baud.
+    never writes to the port and never uses 1200 baud. The port is opened at
+    115200 baud with DTR and RTS asserted (steady, exactly like
+    `pio device monitor`): the firmware's native TinyUSB CDC drops every
+    write while DTR is low, so a de-asserted DTR would receive nothing. The
+    modem lines are never toggled after open (the ESP32-S3 reset dance needs
+    a DTR/RTS sequence, not a steady level).
   * A port is opened only when its USB descriptor matches manufacturer,
     product and the serial number stored as COLIBRINO_USB_SERIAL in the
     ignored repo-root .env. --port only disambiguates verified candidates.
@@ -809,11 +814,16 @@ def redact_identity(desc: Dict[str, object]) -> Dict[str, object]:
 
 
 def open_verified_port(desc: Dict[str, object]):
+    """Open the verified port read-only in practice: 115200 baud, DTR and RTS
+    asserted once at open (the firmware's TinyUSB CDC only transmits while the
+    host holds DTR; `pio device monitor` produced the retained logs with the
+    same pyserial defaults), never toggled afterwards, never 1200 baud, and
+    nothing is ever written."""
     ser = serial.Serial()  # type: ignore[union-attr]
     ser.port = desc["device"]
     ser.baudrate = BAUD
-    ser.dtr = False
-    ser.rts = False
+    ser.dtr = True
+    ser.rts = True
     ser.timeout = 0.2
     ser.open()
     return ser

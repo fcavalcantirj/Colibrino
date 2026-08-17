@@ -113,8 +113,11 @@ work without it). Run them from `sticks3/`.
    The tool refuses to open anything unless exactly one port matches
    manufacturer, product and `COLIBRINO_USB_SERIAL` (case-insensitive).
    `--port` only chooses between several verified candidates; it never bypasses
-   verification. The port is opened at 115200 baud with DTR and RTS
-   de-asserted, never at 1200 baud, and nothing is ever written to it.
+   verification. The port is opened at 115200 baud with DTR and RTS asserted
+   (required: the firmware's native TinyUSB CDC drops every write while the
+   host holds DTR low, which is why `pio device monitor` sees output), the
+   modem lines are never toggled after open, never 1200 baud, and nothing is
+   ever written to it.
 
    Output goes to `sticks3/.device-backups/logs/capture-YYYYMMDDTHHMMSS/`
    (git-ignored): `raw.log` (device bytes verbatim, so
@@ -138,6 +141,13 @@ work without it). Run them from `sticks3/`.
 
        python3 tools/capture_session.py --simulate .device-backups/logs/device-monitor-260815-151549.log --no-audio --plan tools/capture_plans/round1.json
 
+   A simulated capture is a rehearsal, not data: `session.json` records
+   `mode: simulate` plus the source log's name and SHA-256, and everything
+   downstream treats it as such (fixtures named `...-sim`, dated from the
+   source log, `provenance.simulated: true`, no cue-derived segments, always
+   `review_required`, never promotable, `--accept-runs` prints `REHEARSAL`
+   instead of `ACCEPT`).
+
 4. **Turn the capture into fixture candidates**:
 
        python3 tools/make_trace_fixture.py .device-backups/logs/capture-YYYYMMDDTHHMMSS
@@ -151,6 +161,11 @@ work without it). Run them from `sticks3/`.
 5. **Decide worn acceptance by run id** (section 7):
 
        python3 tools/make_trace_fixture.py --accept-runs V1,V2 --session .device-backups/logs/capture-YYYYMMDDTHHMMSS
+
+   The designated set must be one of the plan's `acceptance.designated_runs`
+   (the plan is the one recorded in the capture's `session.json`); anything
+   else, or a capture without a plan, is `REJECT` and the `ACCEPTANCE` line
+   names the rule that was applied.
 
 ## 6. Device checklist
 
@@ -211,6 +226,15 @@ Runs that are not designated never count toward acceptance, whether they pass
 or fail; they are evidence, not verdicts. Redo attempts (`r`) invalidate the
 earlier attempt; only the latest valid attempt of a run id is considered.
 
+The tool enforces the designation itself: it loads the plan recorded in each
+`--session` directory's `session.json`, requires the designated set to equal
+one of `acceptance.designated_runs` (`V1+V2` or `V2+V3` in `round1.json`;
+without that list it falls back to "at least two `V_standard` runs whose plan
+expects `BLINK_FIRMLY >= 2`"), rejects captures without a plan or with
+disagreeing acceptance blocks, and prints the rule in the `ACCEPTANCE` line
+(`rule_ok`, `runs_ok`, `verdict`). Runs from a simulated capture yield
+`verdict=REHEARSAL`, never `ACCEPT`.
+
 ## 8. When to trigger the VL53L4CD-class evaluation
 
 Evaluate a compact sensor with a documented near-eye safety case (ST
@@ -261,8 +285,12 @@ the cue, is the fixture anchor.
 
 1. `make_trace_fixture.py` writes candidates into `v2/traces/candidates/`
    (git-ignored) and prints `REVIEW REQUIRED` for anything with an ambiguous or
-   missed cue peak, a parity mismatch, a coded-group count that disagrees with
-   the replay, or an unmarked source.
+   missed cue peak, a parity mismatch, a coded-group count or a whole-stage
+   `CLICK_CANDIDATE` expectation that disagrees with the replay's stage
+   sequence count (for example a `V` run whose data holds zero coded
+   patterns), per-cue `IMPULSE` expectations exceeding the detector-accepted
+   impulses in the stage, a simulated capture, a plan file changed since the
+   capture, or an unmarked source.
 2. A human reviews the labels, corrects segments and expectations, sets
    `provenance.labeler` to `owner` or `owner_reviewed`, sets
    `provenance.cleared_on`, and clears `review_required` only when every reason
@@ -271,9 +299,10 @@ the cue, is the fixture anchor.
 3. `make_trace_fixture.py --promote NAME` copies the three files into
    `v2/traces/` and appends their SHA-256 to `v2/traces/MANIFEST.sha256`. It
    refuses while `review_required` is true, while the labeler is still
-   `agent`, while `cleared_on` is null, for `private` fixtures, on any
-   de-identification hit, or if a promoted file with that name already exists
-   (promoted fixtures are immutable).
+   `agent`, while `cleared_on` is null, for `private` fixtures, for fixtures
+   with `provenance.simulated: true`, on any de-identification hit, or if a
+   promoted file with that name already exists (promoted fixtures are
+   immutable).
 4. The commit that adds promoted fixtures is a human commit; nothing here
    automates it.
 

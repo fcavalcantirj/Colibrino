@@ -10,14 +10,25 @@ Usage
       and stage into <colibrino-root>/v2/traces/candidates/ (git-ignored).
 
   make_trace_fixture.py --accept-runs V1,V2 --session DIR [--session DIR ...]
-      Worn-acceptance check: only the designated run ids count. Each run's
-      latest valid attempt is sliced into its own log and replayed; every one
-      must be RESULT=PASS with clean controls for the aggregate ACCEPT.
+      Worn-acceptance check: only the designated run ids count. The designated
+      set must be one of the capture plan's acceptance.designated_runs (plan
+      loaded from session.json.plan; captures without a plan are REJECTED).
+      Each run's latest valid attempt is sliced into its own log and replayed;
+      every one must be RESULT=PASS with clean controls for the aggregate
+      ACCEPT. The ACCEPTANCE line names the plan rule that was applied.
 
   make_trace_fixture.py --promote NAME [--dest v2/traces]
       Manual promotion gate for a reviewed candidate (refuses while
       review_required is true, while the labeler is still "agent", while
-      cleared_on is null, or for private fixtures).
+      cleared_on is null, for private fixtures, or for fixtures generated
+      from a simulated capture).
+
+Simulated captures (capture_session.py --simulate; session.json mode
+"simulate" or a capture-sim-* directory) are rehearsals: their fixtures are
+named ...-sim, carry provenance.simulated true plus the source log sha, take
+their capture_date from the simulated source log (not the rehearsal date),
+never get cue-derived segments (the wearer never heard those cues) and are
+always review_required.
 
 Fixture CSV values are copied verbatim from the device log. All outputs pass
 the de-identification guard before anything is written.
@@ -72,6 +83,9 @@ class FixtureError(Exception):
 class SourceInput:
     def __init__(self, path: str) -> None:
         self.path = os.path.abspath(path)
+        self.mode: Optional[str] = None
+        self.simulated = False
+        self.simulated_source: Optional[Dict[str, object]] = None
         if os.path.isdir(self.path):
             self.kind = "capture-session"
             self.raw_path = os.path.join(self.path, "raw.log")
@@ -79,6 +93,14 @@ class SourceInput:
                 raise FixtureError(f"{path}: capture directory has no raw.log")
             self.session_json = self._load_json(os.path.join(self.path, "session.json"))
             self.markers = self._load_markers(os.path.join(self.path, "markers.jsonl"))
+            if isinstance(self.session_json, dict):
+                self.mode = self.session_json.get("mode")
+                src = self.session_json.get("simulated_source")
+                self.simulated_source = src if isinstance(src, dict) else None
+            # A rehearsal is a rehearsal even if session.json is missing or edited.
+            self.simulated = self.mode == "simulate" or os.path.basename(self.path).startswith("capture-sim-")
+            if self.simulated:
+                self.kind = "capture-session-simulated"
         else:
             self.kind = "device-monitor-log"
             self.raw_path = self.path
@@ -89,6 +111,11 @@ class SourceInput:
         self.lines = cc.read_lines(self.raw_path)
         self.sha256 = cc.sha256_file(self.raw_path)
         self.sessions = cc.split_sessions(self.lines)
+        self.plan: Optional[Dict[str, object]] = None
+        self.plan_meta: Optional[Dict[str, object]] = None
+        self.plan_session_id: Optional[str] = None
+        self.plan_path: Optional[str] = None
+        self.plan_sha_changed = False
         self.plan_runs: Dict[str, Dict[str, object]] = {}
         self._load_plan_runs()
 
@@ -116,11 +143,13 @@ class SourceInput:
         return markers
 
     def _load_plan_runs(self) -> None:
+        """Load the plan named by session.json.plan (path relative to the repo root)."""
         if not self.session_json:
             return
         plan_meta = self.session_json.get("plan")
-        if not plan_meta or not plan_meta.get("path"):
+        if not isinstance(plan_meta, dict) or not plan_meta.get("path"):
             return
+        self.plan_meta = plan_meta
         plan_path = os.path.join(cc.repo_root(), str(plan_meta["path"]))
         if not os.path.isfile(plan_path):
             plan_path = os.path.join(cc.sticks3_dir(), "tools", "capture_plans", os.path.basename(str(plan_meta["path"])))
@@ -128,13 +157,33 @@ class SourceInput:
             return
         try:
             plan = cc.load_plan(plan_path)
-            session = cc.plan_session(plan, str(plan_meta.get("session_id", "A")))
+            session_id = str(plan_meta.get("session_id", "A"))
+            session = cc.plan_session(plan, session_id)
         except (ValueError, KeyError, OSError):
             return
+        self.plan = plan
+        self.plan_path = plan_path
+        self.plan_session_id = session_id
+        recorded_sha = plan_meta.get("sha256")
+        self.plan_sha_changed = bool(recorded_sha) and cc.sha256_file(plan_path) != recorded_sha
         for run in session.get("runs", []):
             self.plan_runs[str(run["run_id"])] = run
 
     def capture_date(self) -> Optional[str]:
+        """Date the DATA was recorded.
+
+        Live capture directories carry it in their name. A simulated capture is
+        a rehearsal: its directory stamp is the rehearsal date, so the date is
+        taken from the simulated source log's name instead (None when that
+        name carries no date; pass --capture-date then).
+        """
+        if self.simulated:
+            source_name = str((self.simulated_source or {}).get("basename") or "")
+            for regex, prefix in ((_LOG_DATE_RE, "20"), (_CAPTURE_DATE_RE, "")):
+                match = regex.search(source_name)
+                if match:
+                    return f"{prefix}{match.group(1)}-{match.group(2)}-{match.group(3)}"
+            return None
         base = os.path.basename(self.path)
         match = _CAPTURE_DATE_RE.search(base)
         if match:
@@ -361,6 +410,63 @@ def build_segments(
 
 
 # --------------------------------------------------------------------------
+# Label vs replay consistency
+# --------------------------------------------------------------------------
+
+
+def _op_holds(op: str, expected: int, actual: int) -> bool:
+    if op == "eq":
+        return actual == expected
+    if op == "ge":
+        return actual >= expected
+    if op == "le":
+        return actual <= expected
+    return True
+
+
+def replay_consistency_reasons(
+    segments: Sequence[Dict[str, object]],
+    stage_first_ms: int,
+    stage_last_ms: int,
+    stage_rep: Optional[Dict[str, object]],
+) -> List[str]:
+    """Review reasons where a segment's expectation contradicts the replay.
+
+    * Whole-stage segments (spanning the entire stage) expecting
+      CLICK_CANDIDATE eq/ge/le N are checked against the replay's stage
+      sequence count exactly.
+    * Per-cue segments expecting IMPULSE eq/ge N need at least sum(N)
+      detector-accepted impulses in the stage; fewer means some cued blinks
+      were not impulses to the detector (necessary condition only).
+    Sub-stage windows cannot be checked against a per-stage count and are
+    left to the whole-stage segment that covers them.
+    """
+    reasons: List[str] = []
+    if not stage_rep:
+        return reasons
+    sequences = int(stage_rep.get("sequences", 0))  # type: ignore[arg-type]
+    impulses = int(stage_rep.get("impulses", 0))  # type: ignore[arg-type]
+    impulse_minimum = 0
+    impulse_cues = 0
+    for seg in segments:
+        expect = seg.get("expect", {})
+        if not isinstance(expect, dict):
+            continue
+        whole_stage = int(seg["t_start_ms"]) <= stage_first_ms and int(seg["t_end_ms"]) >= stage_last_ms  # type: ignore[arg-type]
+        if whole_stage:
+            for op, value in sorted((expect.get("CLICK_CANDIDATE") or {}).items()):
+                if not _op_holds(op, int(value), sequences):
+                    reasons.append(f"segment {seg['name']}: whole-stage expect CLICK_CANDIDATE {op} {value} but replay sequences={sequences}")
+        if "cue_ms" in seg:
+            impulse_cues += 1
+            spec = expect.get("IMPULSE") or {}
+            impulse_minimum += max(int(spec.get("eq", 0)), int(spec.get("ge", 0)))
+    if impulse_cues and impulse_minimum > impulses:
+        reasons.append(f"per-cue IMPULSE expectations over {impulse_cues} cues need >= {impulse_minimum} impulses but replay impulses={impulses}")
+    return reasons
+
+
+# --------------------------------------------------------------------------
 # TSV derivation
 # --------------------------------------------------------------------------
 
@@ -405,12 +511,14 @@ def ensure_replay_bin(explicit: Optional[str]) -> Tuple[str, Optional[str]]:
     return path, tmp
 
 
-def stage_fixture_name(date: str, session_index: int, stage: str, run_kind: str, suffix: str = "") -> str:
+def stage_fixture_name(date: str, session_index: int, stage: str, run_kind: str, suffix: str = "", simulated: bool = False) -> str:
     name = f"{date.replace('-', '')}-s{session_index}-{stage.lower()}-{run_kind.lower()}"
     if suffix:
         if not re.match(r"^[a-z0-9]{1,8}$", suffix):
             raise FixtureError("--name-suffix must be 1-8 lowercase letters or digits")
         name += f"-{suffix}"
+    if simulated:
+        name += "-sim"
     return name
 
 
@@ -423,7 +531,13 @@ def make_fixtures_for_input(
 ) -> Dict[str, object]:
     date = args.capture_date or source.capture_date()
     if not date or not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-        raise FixtureError(f"{os.path.basename(source.path)}: cannot derive capture date; pass --capture-date YYYY-MM-DD")
+        hint = " (simulated capture: the date comes from the simulated source log, never from the rehearsal directory)" if source.simulated else ""
+        raise FixtureError(f"{os.path.basename(source.path)}: cannot derive capture date{hint}; pass --capture-date YYYY-MM-DD")
+    if source.simulated:
+        printer(
+            f"SIMULATED capture: fixtures are named ...-sim, carry provenance.simulated=true, get no cue-derived "
+            f"segments and are always review_required (capture_date={date} from the simulated source)"
+        )
     replay = cc.run_replay(replay_bin, source.raw_path)
     replay_sessions: List[Dict[str, object]] = replay["sessions"]  # type: ignore[assignment]
     if len(replay_sessions) != len(source.sessions):
@@ -507,6 +621,10 @@ def make_fixtures_for_input(
             raise FixtureError(f"labeler {args.labeler!r} not in {cc.LABELERS}")
         if parity == "mismatch":
             review_base.append("firmware RESULT and host replay disagree (different detector build or dropped lines)")
+        if source.simulated:
+            review_base.append("simulated capture (rehearsal): plan runs/labels replayed over an old log the wearer recorded under other instructions; cue-derived segments suppressed")
+        if source.plan_sha_changed:
+            review_base.append("plan file changed since the capture (session.json plan sha256 differs); labels come from the current file")
 
         for stage_name in cc.CAPTURE_STAGES:
             block = session.stages.get(stage_name)
@@ -516,7 +634,9 @@ def make_fixtures_for_input(
             if not isinstance(labels_spec, dict):
                 labels_spec = DEFAULT_STAGE_LABELS[stage_name]
             review = list(review_base)
-            cues = source.cues_for(idx, stage_name)
+            # Cue markers of a rehearsal were never heard by the wearer: no
+            # per-cue / per-group segments and no refinement for them.
+            cues = [] if source.simulated else source.cues_for(idx, stage_name)
             segments, refinements = build_segments(block, labels_spec, cues, review)
             stage_rep = (rep or {}).get("stages", {}).get(stage_name) if rep else None  # type: ignore[union-attr]
             if isinstance(labels_spec.get("per_group"), dict) and stage_rep is not None:
@@ -524,7 +644,8 @@ def make_fixtures_for_input(
                 group_expect = labels_spec["per_group"].get("expect", {}).get("CLICK_CANDIDATE", {})  # type: ignore[index]
                 if group_expect.get("eq") == 1 and expected_groups and stage_rep["sequences"] != expected_groups:  # type: ignore[index]
                     review.append(f"coded groups={expected_groups} but replay sequences={stage_rep['sequences']}")  # type: ignore[index]
-            name = stage_fixture_name(date, idx, stage_name, run_kind, args.name_suffix or "")
+            review.extend(replay_consistency_reasons(segments, block.rows[0].ms, block.rows[-1].ms, stage_rep))
+            name = stage_fixture_name(date, idx, stage_name, run_kind, args.name_suffix or "", simulated=source.simulated)
             csv_text = CSV_HEADER + "\n" + "".join(
                 f"{row.ms},{row.usec}," + ",".join(row.raw_values) + "\n" for row in block.rows
             )
@@ -567,6 +688,9 @@ def make_fixtures_for_input(
                 "provenance": {
                     "source_sha256": source.sha256,
                     "source_kind": source.kind,
+                    "capture_mode": source.mode if source.session_json else None,
+                    "simulated": source.simulated,
+                    "simulated_source_sha256": (source.simulated_source or {}).get("sha256") if source.simulated else None,
                     "capture_tool_commit": capture_tool_commit,
                     "labeler": args.labeler,
                     "deidentified": True,
@@ -631,11 +755,63 @@ def make_fixtures_for_input(
 # --------------------------------------------------------------------------
 
 
+def _acceptance_rule(designated: Sequence[str], sources: Sequence[SourceInput], printer) -> Tuple[str, str, List[str]]:
+    """Apply the capture plan's acceptance rule to the designated set.
+
+    Returns (plan_name, rule_text, problems). The plan is the one recorded in
+    each capture's session.json (loaded from its path); every capture must
+    carry a plan and all plans must agree on the acceptance block.
+    """
+    problems: List[str] = []
+    planned = [src for src in sources if src.plan is not None]
+    for src in sources:
+        label = os.path.basename(src.path)
+        if not src.session_json:
+            problems.append(f"{label}: no session.json (raw log or foreign directory); acceptance needs a capture_session.py directory")
+        elif src.plan is None:
+            problems.append(f"{label}: no capture plan (session.json.plan missing or its file not found); acceptance rule cannot be applied")
+        elif src.plan_sha_changed:
+            printer(f"WARNING {label}: plan file changed since the capture (sha256 differs); the current file's rule is applied")
+    if not planned:
+        return "none", "no plan: acceptance undecidable", problems
+    plan = planned[0].plan or {}
+    plan_name = str(plan.get("name") or os.path.basename(planned[0].plan_path or "plan"))
+    acceptance = plan.get("acceptance") if isinstance(plan.get("acceptance"), dict) else {}
+    for src in planned[1:]:
+        if (src.plan or {}).get("acceptance") != plan.get("acceptance"):
+            problems.append(f"{os.path.basename(src.path)}: its plan's acceptance block differs from {os.path.basename(planned[0].path)}")
+    allowed = acceptance.get("designated_runs")  # type: ignore[union-attr]
+    if isinstance(allowed, list) and allowed and all(isinstance(group, list) and group for group in allowed):
+        sets_text = " | ".join("+".join(str(r) for r in group) for group in allowed)
+        rule_text = f"acceptance.designated_runs: one of {sets_text}"
+        if not any(set(designated) == {str(r) for r in group} for group in allowed):
+            problems.append(f"designated set {','.join(designated)} is not one of the plan's acceptance.designated_runs ({sets_text})")
+    else:
+        rule_text = "plan has no acceptance.designated_runs; fallback: >=2 designated V_standard probe runs whose plan expects BLINK_FIRMLY >= 2 sequences"
+        if len(designated) < 2:
+            problems.append("fewer than two designated runs")
+        for run_id in designated:
+            spec = next((src.plan_runs[run_id] for src in planned if run_id in src.plan_runs), None)
+            if spec is None:
+                problems.append(f"{run_id}: not a run of the plan session(s) of the given captures")
+                continue
+            if not spec.get("probe", True) or spec.get("run_kind") != "V_standard":
+                problems.append(f"{run_id}: run_kind {spec.get('run_kind')!r} is not V_standard")
+                continue
+            expected = (spec.get("expected_sequences") or {}).get("BLINK_FIRMLY") or {}
+            if max(int(expected.get("ge", 0) or 0), int(expected.get("eq", 0) or 0)) < 2:
+                problems.append(f"{run_id}: plan does not expect >= 2 BLINK_FIRMLY sequences ({expected})")
+    return plan_name, rule_text, problems
+
+
 def accept_runs(run_ids: Sequence[str], session_dirs: Sequence[str], replay_bin: str, printer) -> bool:
     designated = [r.strip() for r in run_ids if r.strip()]
     if not designated:
         raise FixtureError("--accept-runs needs at least one run id")
+    if len(set(designated)) != len(designated):
+        raise FixtureError("--accept-runs lists a run id twice")
     sources = [SourceInput(d) for d in session_dirs]
+    plan_name, rule_text, rule_problems = _acceptance_rule(designated, sources, printer)
     rows: List[Dict[str, object]] = []
     for run_id in designated:
         found = None
@@ -683,6 +859,7 @@ def accept_runs(run_ids: Sequence[str], session_dirs: Sequence[str], replay_bin:
                 "capture": os.path.basename(source.path),
                 "session_index": session_index,
                 "run_status": found["run"].get("status"),
+                "simulated": source.simulated,
                 "replay": counts,
                 "replay_result": entry.get("result") if entry else None,
                 "replay_sessions_in_slice": len(replay["sessions"]),  # type: ignore[arg-type]
@@ -690,7 +867,7 @@ def accept_runs(run_ids: Sequence[str], session_dirs: Sequence[str], replay_bin:
             }
         )
     printer("run_id\tcapture\tsession\trun_status\treplay(still/blink/head)\treplay_result\tverdict")
-    all_ok = True
+    runs_ok = True
     for row in rows:
         counts = row.get("replay")
         counts_text = f"{counts['still']}/{counts['blink']}/{counts['head']}" if counts else "-"
@@ -708,9 +885,25 @@ def accept_runs(run_ids: Sequence[str], session_dirs: Sequence[str], replay_bin:
             )
         )
         if row.get("verdict") != "PASS":
-            all_ok = False
-    printer(f"ACCEPTANCE designated={','.join(designated)} verdict={'ACCEPT' if all_ok else 'REJECT'} (only designated runs count)")
-    return all_ok
+            runs_ok = False
+    for problem in rule_problems:
+        printer(f"RULE: {problem}")
+    simulated = any(row.get("simulated") for row in rows)
+    if simulated:
+        printer("NOTE: one or more designated runs come from a SIMULATED capture (rehearsal); a rehearsal is never a worn acceptance")
+    rule_ok = not rule_problems
+    if runs_ok and rule_ok and not simulated:
+        verdict = "ACCEPT"
+    elif runs_ok and rule_ok:
+        verdict = "REHEARSAL"  # would accept, but the data is a replayed old log
+    else:
+        verdict = "REJECT"
+    printer(
+        f"ACCEPTANCE designated={','.join(designated)} plan={plan_name} rule=\"{rule_text}\" "
+        f"rule_ok={'yes' if rule_ok else 'no'} runs_ok={'yes' if runs_ok else 'no'} "
+        f"verdict={verdict} (only designated runs count)"
+    )
+    return verdict == "ACCEPT"
 
 
 # --------------------------------------------------------------------------
@@ -733,6 +926,8 @@ def promote(name: str, candidates_dir: str, dest_dir: str, printer) -> None:
         problems.append("provenance.cleared_on is null")
     if labels.get("capture", {}).get("commit_class") == "private":
         problems.append("commit_class is private")
+    if labels.get("provenance", {}).get("simulated") or labels.get("provenance", {}).get("source_kind") == "capture-session-simulated":
+        problems.append("provenance.simulated is true (rehearsal fixture, never promotable)")
     files = [name + ".csv", name + ".labels.json", name + ".labels.tsv"]
     for fname in files:
         path = os.path.join(candidates_dir, fname)
