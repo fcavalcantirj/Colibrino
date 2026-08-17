@@ -281,9 +281,10 @@
     {
       "id": "T14",
       "name": "v2 pure-core host scaffold",
-      "status": "planned_branch_only",
-      "core_scaffold_branch": null,
-      "core_scaffold_commit": null,
+      "status": "branch_only_without_fixtures",
+      "core_scaffold_branch": "agent/v2-core-scaffold",
+      "core_scaffold_commit": "00c12850c5724dbed811cf6ad66d7bb8cc099c44",
+      "core_scaffold_note": "Branch-only, pushed, never merged; 16 ctest tests (126 Unity cases): host preset all pass with the two golden tests skipped for lack of promoted fixtures, host-oracle preset fails exactly those two, host-asan clean. Lands on master only through the Step 6 integration branch after real fixtures are promoted and host-oracle is green.",
       "acceptance": [
         "v2/ is a self-contained C11 CMake project with vendored Unity 2.6.1, -Wall -Wextra -Werror (C-only prototype warnings), clang-tidy only when available, and presets host (developer, always green; golden tests skip with an explicit no-fixtures message) and host-oracle (zero fixtures fail).",
         "Fixed-size event contracts: 16-byte header (magic, version, kind, producer, size, seq, t_ms) plus 8-byte bodies, static-asserted; wraparound-safe timestamp and sequence comparison; bounded TTL horizon; explicit little-endian encode/decode with no raw struct memcpy; header validation before any producer-indexed state.",

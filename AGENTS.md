@@ -85,10 +85,12 @@ The round-one units are `imu-motion` (contract-only this round; rate-based;
 at `IMPULSE`/`CANCEL` events, never at clicks), `blink-code` (PROPOSED in the
 Oracle map: the temporal double-pause-double matcher that alone produces a
 click candidate), `access-intent` (the only action authority), and `profile`.
-The v2 host core lives under `v2/` (C11, CMake + vendored Unity, run from
-`v2/`: `cmake --preset host && cmake --build build-host && ctest --test-dir
-build-host`; the Oracle gate is the `host-oracle` preset where zero fixtures
-fail). The loop may never touch `v2/test/**`, `v2/traces/**`,
+The v2 host core lives on the branch-only `agent/v2-core-scaffold`
+(`PORT_PLAN.json` T14 records its commit) under `v2/` (C11, CMake + vendored
+Unity, run from `v2/`: `cmake --preset host && cmake --build build-host &&
+ctest --test-dir build-host`; the Oracle gate is the `host-oracle` preset where
+zero fixtures fail). It is not on master until real fixtures are promoted and
+an integration branch is green under both presets. The loop may never touch `v2/test/**`, `v2/traces/**`,
 `v2/third_party/**`, `v2/tools/**`, `sticks3/tools/**`, the feel constants in
 `v2/core/include/colibrino/v2/feel_defaults.h`, or anything under `sticks3/`
 firmware. Fresh traces are captured with the existing firmware and the
