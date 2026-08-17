@@ -97,6 +97,10 @@ cv2_gesture_event_t cv2_blink_code_step(cv2_blink_code_state_t *st,
                           (uint8_t)CV2_BLINK_KIND_MAX, in->ttl_ms) != CV2_HDR_OK) {
     return none_gesture(); /* malformed input never advances the pattern */
   }
+  if (in->hdr.producer_id != (uint16_t)CV2_PRODUCER_BLINK_IMU &&
+      in->hdr.producer_id != (uint16_t)CV2_PRODUCER_BLINK_OPTICAL) {
+    return none_gesture(); /* only blink channels may feed the code matcher */
+  }
   if (in->hdr.kind == (uint8_t)CV2_BLINK_CANCEL) {
     cancel_sequence(st);
     return none_gesture();

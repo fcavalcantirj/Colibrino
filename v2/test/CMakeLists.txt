@@ -43,6 +43,20 @@ add_test(NAME fixtures_manifest
           -P ${CMAKE_SOURCE_DIR}/cmake/check_manifest.cmake)
 set_tests_properties(fixtures_manifest PROPERTIES LABELS "fixtures;golden")
 
+# ---- fixture-tooling contract ---------------------------------------------
+# Pins the enums and the labels.tsv header shared by sticks3/tools (Python
+# producer) and the C golden runner. Runs with the first python3 found;
+# reported as skipped (exit 77) when python3 is absent, never as passed.
+find_program(COLIBRINO_V2_PYTHON3 NAMES python3)
+if(COLIBRINO_V2_PYTHON3)
+  add_test(NAME labels_schema_consistency
+    COMMAND ${COLIBRINO_V2_PYTHON3} ${CMAKE_SOURCE_DIR}/tools/tests/test_labels_schema.py)
+else()
+  add_test(NAME labels_schema_consistency COMMAND ${CMAKE_COMMAND} -E false)
+  set_tests_properties(labels_schema_consistency PROPERTIES SKIP_RETURN_CODE 1)
+endif()
+set_tests_properties(labels_schema_consistency PROPERTIES LABELS "fixtures;contracts")
+
 # ---- blink pipeline: differential vs the sticks3 v1 detector --------------
 # Links the production v1 translation unit unchanged; both TUs get
 # -ffp-contract=off via cv2_warnings so float results are comparable bit for

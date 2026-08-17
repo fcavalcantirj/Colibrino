@@ -15,40 +15,40 @@ empty oracle never passes. Nothing here is edited by the loop.
 | `NAME.labels.tsv` | derived from the JSON by tooling | flat form the C tests read (no JSON parser in C) |
 | `MANIFEST.sha256` | `tools/update_manifest.sh` | `<sha256>  <relative path>` for every fixture file; the tests treat a listed `NAME.csv` + `NAME.labels.tsv` as one promoted pair |
 
-`NAME` carries only a run id and a segment role, e.g. `run07-guided`. The
-first csv line must be exactly the header above (checked by ctest
-`fixtures_manifest`).
+`NAME` is `YYYYMMDD-s<session>-<stage_lower>-<run_kind_lower>` (plus an
+optional suffix, e.g. `20260815-s3-blink_firmly-hb_hard_singles`), assigned
+by `sticks3/tools/make_trace_fixture.py`. The first csv line must be exactly
+the header above (checked by ctest `fixtures_manifest`).
 
 ### `NAME.labels.tsv`
 
-Tab-separated, first line exactly:
+Derived deterministically from `NAME.labels.json` by
+`sticks3/tools/make_trace_fixture.py` (`derive_tsv`); the C golden tests read
+only this file (no JSON parser in C). Tab-separated, first line exactly:
 
 ```
-id	kind	stage	start_ms	end_ms	expect_impulses	expect_clicks	expect_source	note
+# segment_name	kind	t_start_ms	t_end_ms	expect_kind	op	value	tolerance_ms
 ```
 
-One row per segment. `start_ms` / `end_ms` are device milliseconds
-(inclusive window on the event's own `t_ms`); `expect_*` is an integer or `*`
-(unconstrained). Lines starting with `#` are ignored.
+One row per expectation (a segment with two expectations yields two rows).
+`t_start_ms` / `t_end_ms` are device milliseconds; the window is inclusive on
+the event's own `t_ms` and is widened by `tolerance_ms` on both sides.
+`expect_kind` is `IMPULSE` (checked by `blink_dsp_golden`) or
+`CLICK_CANDIDATE` (checked by `blink_code_golden`); `op` is `eq`, `le`, or
+`ge`; `value` is a non-negative integer. Any other token is a malformed label
+and fails the run. Lines starting with `#` after the header are ignored.
 
-Enumerations (mirrored in `labels.schema.json`):
+Enumerations (closed lists; `labels.schema.json` and
+`sticks3/tools/capture_common.py` must agree, pinned by the
+`labels_schema_consistency` test):
 
-- `run_kind`: `guided_probe` (the firmware's three-window IMU probe) · `free_run` (button-started capture, optional)
-- `mount`: `worn` · `bench` · `handheld`
-- `labeler`: `host_cue` (cue times from the host script) · `human` · `tool`
-- `stage`: `KEEP_HEAD_STILL` · `BLINK_FIRMLY` · `MOVE_HEAD` · `NONE`
-- `expect_source`: `cue_window` (`[cue + 50 ms, cue + 650 ms]` until refined) · `human_refined` (±60 ms) · `operator_marker` · `derived`
-- segment `kind`: `rest` · `head_sweep` · `hard_blink` · `soft_blink` · `confounder` · `coded_group` · `uniform_four` · `other`
-
-Golden expectations by kind (owner-ratified round-1 semantics):
-
-| kind | blink-dsp (`expect_impulses`) | blink-code (`expect_clicks`) |
-|------|-------------------------------|------------------------------|
-| `hard_blink` | 1 per cue window | 0 |
-| `head_sweep` | 0 (above the head gate) | 0 |
-| `coded_group` | `*` | 1 |
-| `uniform_four` | `*` | 0 |
-| `rest`, `soft_blink`, `confounder` | `*` (sub-pattern impulses are legitimate) | 0 |
+- `run_kind`: `R0_bench` · `V_standard` · `HB_hard_singles` · `U_uniform_four` · `C_cued_coded` · `HS_sweeps` · `R_rest` · `SB_soft` · `CF2_bumps` · `CF1_confounders` · `BN_boundary`
+- `mount`: `bench` · `glasses_right_temple` · `glasses_left_temple` · `headband_front`
+- `labeler`: `owner` · `owner_reviewed` · `agent`
+- `stage`: `KEEP_HEAD_STILL` · `BLINK_FIRMLY` · `MOVE_HEAD`
+- `expect_source`: `human-labeled` · `instruction-window` (`[cue + 50 ms, cue + 650 ms]` until refined by a human to about ±60 ms)
+- segment `kind`: `rest` · `natural_blink` · `hard_blink` · `coded_pattern` · `uniform_four` · `head_sweep` · `confounder`
+- `commit_class`: `public` · `private`
 
 ## Privacy rules (public repository)
 
@@ -61,14 +61,21 @@ walking confounders are private by default.
 
 ## Promotion steps (human-run)
 
-1. Capture with the monitor-only host tool (no upload, no serial commands:
-   the StickS3 CDC is write-only) into `traces/candidates/`.
-2. Convert the `IMU,...` rows of one guided session to `NAME.csv`; write
-   `NAME.labels.json` (cue times aligned to device ms as *estimated
-   provenance*; refine by hand where ambiguous); derive `NAME.labels.tsv`.
-3. Scrub: grep the three files for MAC / hostname / IP / paths; check the
-   csv header line.
-4. Move the three files into `traces/`, run `tools/update_manifest.sh`,
-   then `ctest --test-dir build-host -R 'fixtures_manifest|golden'`.
+1. Capture with `sticks3/tools/capture_session.py` (monitor-only: no upload,
+   no serial commands; the StickS3 CDC is write-only) following
+   `docs/V2_TRACE_CAPTURE_PROTOCOL.md`; raw logs stay under the ignored
+   `sticks3/.device-backups/logs/`.
+2. Run `sticks3/tools/make_trace_fixture.py <capture-dir>`: it writes
+   `NAME.csv`, `NAME.labels.json`, and the derived `NAME.labels.tsv` into
+   `traces/candidates/`, runs the de-identification guard, replays every
+   session through the production detector, and lists `review_required`
+   reasons (ambiguous cue refinements, parity mismatches). Refine ambiguous
+   labels by hand; a fixture stays a candidate until its clearance line is set.
+3. Promote with `make_trace_fixture.py --promote NAME` (refuses on
+   review_required, missing clearance, private class, or any identifier hit)
+   or move the three files by hand after the same checks.
+4. Run `tools/update_manifest.sh`, then
+   `ctest --test-dir build-host -R 'fixtures_manifest|golden'` and the
+   `host-oracle` preset.
 5. Commit the four files together with a one-line message naming the run id.
    Fixtures are immutable afterwards; a correction is a new fixture.

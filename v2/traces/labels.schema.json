@@ -1,45 +1,90 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "colibrino-v2-labels/1",
+  "$id": "colibrino-v2-trace-labels/1",
   "title": "Colibrino v2 trace labels",
-  "description": "Canonical labels for one promoted trace fixture (NAME.labels.json). The C golden tests read the derived NAME.labels.tsv; both files are hashed in MANIFEST.sha256. No personal identifiers: device milliseconds only.",
+  "description": "Canonical labels for one promoted trace fixture (NAME.labels.json), produced by sticks3/tools/make_trace_fixture.py. The C golden tests read the derived NAME.labels.tsv; CSV, JSON, and TSV are all hashed in MANIFEST.sha256. Every categorical field is a closed enum (no free text); no personal identifiers appear anywhere (device milliseconds only, capture date at day resolution, hashed sources).",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["schema", "trace", "run_kind", "mount", "labeler", "segments"],
+  "required": ["schema", "name", "csv", "csv_sha256", "capture", "harness", "provenance", "segments", "review_required"],
   "properties": {
-    "schema": { "const": "colibrino-v2-labels/1" },
-    "trace": { "type": "string", "pattern": "^[A-Za-z0-9._-]+\\.csv$" },
-    "run_kind": { "enum": ["guided_probe", "free_run"] },
-    "mount": { "enum": ["worn", "bench", "handheld"] },
-    "labeler": { "enum": ["host_cue", "human", "tool"] },
-    "firmware": { "type": "string", "description": "sticks3 git revision that produced the stream" },
-    "notes": { "type": "string" },
+    "schema": { "const": "colibrino-v2-trace-labels/1" },
+    "name": { "type": "string", "pattern": "^[0-9]{8}-s[0-9]+-[a-z_]+-[a-z0-9_]+(-[a-z0-9]+)*$" },
+    "csv": { "type": "string", "pattern": "^[A-Za-z0-9._-]+\\.csv$" },
+    "csv_rows": { "type": "integer", "minimum": 1 },
+    "csv_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "capture": {
+      "type": "object",
+      "required": ["board_model", "capture_date", "nominal_rate_hz", "effective_rate_hz", "session_index", "stage", "run_kind", "mount", "commit_class"],
+      "properties": {
+        "board_model": { "const": "M5Stack StickS3 (BMI270)" },
+        "capture_date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", "description": "day resolution only; never a time of day" },
+        "firmware_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" },
+        "nominal_rate_hz": { "const": 200 },
+        "effective_rate_hz": { "type": "number", "minimum": 1 },
+        "session_index": { "type": "integer", "minimum": 1 },
+        "stage": { "enum": ["KEEP_HEAD_STILL", "BLINK_FIRMLY", "MOVE_HEAD"] },
+        "stage_first_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "stage_last_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "run_id": { "type": ["string", "null"], "pattern": "^[A-Z0-9_-]{1,16}$" },
+        "run_kind": { "enum": ["R0_bench", "V_standard", "HB_hard_singles", "U_uniform_four", "C_cued_coded", "HS_sweeps", "R_rest", "SB_soft", "CF2_bumps", "CF1_confounders", "BN_boundary"] },
+        "mount": { "enum": ["bench", "glasses_right_temple", "glasses_left_temple", "headband_front"] },
+        "commit_class": { "enum": ["public", "private"] }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "required": ["preroll_ms"],
+      "properties": { "preroll_ms": { "type": "integer", "minimum": 0, "maximum": 10000 } }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source_sha256", "labeler", "deidentified", "cleared_on"],
+      "properties": {
+        "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "labeler": { "enum": ["owner", "owner_reviewed", "agent"] },
+        "deidentified": { "const": true },
+        "cleared_on": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "capture_mode": { "enum": ["live", "simulate"] },
+        "simulated": { "type": "boolean" },
+        "capture_tool_commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" }
+      }
+    },
+    "review_required": { "type": "boolean" },
+    "review_reasons": { "type": "array", "items": { "type": "string" } },
     "segments": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "kind", "stage", "start_ms", "end_ms", "expect_source", "expect"],
+        "required": ["name", "kind", "t_start_ms", "t_end_ms", "expect", "expect_source", "tolerance_ms"],
         "properties": {
-          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,23}$" },
-          "kind": {
-            "enum": ["rest", "head_sweep", "hard_blink", "soft_blink", "confounder", "coded_group", "uniform_four", "other"]
-          },
-          "stage": { "enum": ["KEEP_HEAD_STILL", "BLINK_FIRMLY", "MOVE_HEAD", "NONE"] },
-          "start_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-          "end_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-          "expect_source": { "enum": ["cue_window", "human_refined", "operator_marker", "derived"] },
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$" },
+          "kind": { "enum": ["rest", "natural_blink", "hard_blink", "coded_pattern", "uniform_four", "head_sweep", "confounder"] },
+          "t_start_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "t_end_ms": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "tolerance_ms": { "type": "integer", "minimum": 0, "maximum": 5000 },
+          "expect_source": { "enum": ["human-labeled", "instruction-window"] },
           "expect": {
             "type": "object",
+            "minProperties": 1,
             "additionalProperties": false,
             "properties": {
-              "impulses": { "type": ["integer", "null"], "minimum": 0, "description": "blink-dsp IMPULSE count in the window; null = unconstrained ('*' in the tsv)" },
-              "clicks": { "type": ["integer", "null"], "minimum": 0, "description": "blink-code CLICK_CANDIDATE count in the window; null = unconstrained" }
+              "IMPULSE": { "$ref": "#/$defs/count_expect" },
+              "CLICK_CANDIDATE": { "$ref": "#/$defs/count_expect" }
             }
-          },
-          "note": { "type": "string" }
+          }
         }
+      }
+    }
+  },
+  "$defs": {
+    "count_expect": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "eq": { "type": "integer", "minimum": 0 },
+        "le": { "type": "integer", "minimum": 0 },
+        "ge": { "type": "integer", "minimum": 0 }
       }
     }
   }

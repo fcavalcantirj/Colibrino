@@ -256,6 +256,19 @@ static void test_malformed_input_never_advances(void) {
   TEST_ASSERT_EQUAL_UINT8(CV2_GESTURE_NONE,
                           cv2_blink_code_step(&f.st, &bad, &f.cfg).hdr.kind);
   TEST_ASSERT_EQUAL_UINT8(1u, f.st.sequence_impulses);
+  /* A well-formed 24-byte event from a known but non-blink producer (for
+   * example a mis-routed gesture or voice event whose kind value collides
+   * with IMPULSE) must not advance the pattern either. */
+  bad = blink_impulse_at(53u, 1400u, 45u);
+  bad.hdr.producer_id = (uint16_t)CV2_PRODUCER_BLINK_CODE;
+  TEST_ASSERT_EQUAL_UINT8(CV2_GESTURE_NONE,
+                          cv2_blink_code_step(&f.st, &bad, &f.cfg).hdr.kind);
+  TEST_ASSERT_EQUAL_UINT8(1u, f.st.sequence_impulses);
+  bad = blink_impulse_at(54u, 1400u, 45u);
+  bad.hdr.producer_id = (uint16_t)CV2_PRODUCER_VOICE;
+  TEST_ASSERT_EQUAL_UINT8(CV2_GESTURE_NONE,
+                          cv2_blink_code_step(&f.st, &bad, &f.cfg).hdr.kind);
+  TEST_ASSERT_EQUAL_UINT8(1u, f.st.sequence_impulses);
   TEST_ASSERT_EQUAL_UINT8(CV2_GESTURE_NONE,
                           cv2_blink_code_step(&f.st, NULL, &f.cfg).hdr.kind);
   /* The well-formed continuation still works. */
