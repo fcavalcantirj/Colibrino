@@ -59,11 +59,13 @@ traces, physical evidence, and release safety. Oracle Loop owns the executable
 oracle map, specification, and assisted implementation loop. Its remote is
 `https://github.com/fcavalcantirj/oracle-loop`.
 
-Oracle Loop's engine stack ends at
-`dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512` commit
-`3c67984`. The audited Colibrino v2 documents are stacked above it on
-`agent/colibrino-v2-luos-qualification` commit `84b5bea`; neither branch is on
-`main`. Read `AGENTS.md`, `STATE.md`,
+Oracle Loop's branch `dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512`
+(tip `3c67984`) carries the engine plus the ratified v2 oracle map (`b932e38`)
+and the v2 SPEC (`3c67984` itself); `agent/colibrino-v2-luos-qualification`
+(`84b5bea`) adds `docs/10` and its `AGENTS.md` and revises the map, SPEC, README,
+and STATE; `agent/colibrino-v2-round-one-corrections` (`c7a82ac`, stacked on
+`84b5bea`) holds the round-one corrections. None of these is on `main`. Read
+`AGENTS.md`, `STATE.md`,
 `docs/09-colibrino-v2-multimodal-accessibility.md`,
 `docs/10-colibrino-v2-luos-qualification.md`,
 `docs/colibrino-v2-ORACLE-MAP.md`, `docs/colibrino-v2-SPEC.md`, and
@@ -77,6 +79,21 @@ fixtures in Colibrino, pure domain units are implemented against them, and only
 then may Oracle Loop generate within its declared file authority. Feel tuning,
 trace labels, tests, board glue, HID/BLE output, and physical acceptance remain
 human-owned. Voice is a round-two producer and must not block round one.
+
+The round-one units are `imu-motion` (contract-only this round; rate-based;
+`sticks3` `MotionController` is the differential reference), `blink-dsp` (ends
+at `IMPULSE`/`CANCEL` events, never at clicks), `blink-code` (PROPOSED in the
+Oracle map: the temporal double-pause-double matcher that alone produces a
+click candidate), `access-intent` (the only action authority), and `profile`.
+The v2 host core lives under `v2/` (C11, CMake + vendored Unity, run from
+`v2/`: `cmake --preset host && cmake --build build-host && ctest --test-dir
+build-host`; the Oracle gate is the `host-oracle` preset where zero fixtures
+fail). The loop may never touch `v2/test/**`, `v2/traces/**`,
+`v2/third_party/**`, `v2/tools/**`, `sticks3/tools/**`, the feel constants in
+`v2/core/include/colibrino/v2/feel_defaults.h`, or anything under `sticks3/`
+firmware. Fresh traces are captured with the existing firmware and the
+monitor-only tooling in `sticks3/tools/` following
+`docs/V2_TRACE_CAPTURE_PROTOCOL.md`; no upload is needed for capture.
 
 Read `docs/LUOS_ARCHITECTURE_DECISION.md` before introducing Luos. Use
 Luos-compatible fixed-size service contracts from scratch, but keep DSP,
@@ -155,7 +172,8 @@ and microphone remain disabled. BMI270 bias calibration starts immediately and
 restarts whenever motion makes the sample standard deviation unsafe.
 
 The physically verified large blue Button A owns the application workflow; the
-side power/reset control is not an application input. Button A cycles IR probe,
+side power/reset control is not an application input, and the USB CDC channel
+is write-only (the firmware reads nothing from the host). Button A cycles IR probe,
 motion monitor, and mouse mode only while mouse output is locked. In mouse mode,
 holding A for two seconds after calibration toggles armed versus locked output.
 The device cannot leave mouse mode while armed.
@@ -234,11 +252,18 @@ On this workstation PlatformIO may be available only at:
 /Users/fcavalcanti/.platformio/penv/bin/platformio
 ```
 
-The native suite currently contains thirteen Unity cases covering stationary
-calibration, motion rejection, pointer deadzone and accumulation, signal
-separation acceptance/rejection, optical blink duration, the guided optical
-protocol, the coded IMU pattern, uniform-pattern rejection, incomplete-pattern
-rejection, and head-motion cancellation.
+The native suite currently contains thirteen Unity cases; the authoritative
+list is the `RUN_TEST` names in `sticks3/test/*/test_main.cpp`: motion
+`calibration_accepts_stationary_samples`, `calibration_rejects_motion`,
+`pointer_deadzone_suppresses_bias_and_noise`,
+`pointer_accumulates_fractional_motion_and_respects_sign`; optical
+`separation_rejects_identical_signals`,
+`separation_accepts_stable_open_closed_difference`,
+`blink_detector_requires_human_blink_duration`,
+`guided_protocol_requires_signal_and_two_blinks`; IMU `stillness_never_emits`,
+`double_pause_double_pattern_emits_once`, `uniform_four_blinks_do_not_emit`,
+`three_pattern_impulses_do_not_emit`, `head_motion_cancels_partial_sequence`.
+Refractory rejection is asserted only by the Wokwi gate.
 
 The no-upload production build currently uses `espressif32@6.12.0`,
 Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The last verified OTA
@@ -336,3 +361,11 @@ Use terse commits that describe the delivered outcome. Before merging, refresh
 remote refs and require the topic branch to contain the remote default branch.
 Prefer a fast-forward merge when history is linear. Never force-push or rewrite
 published history unless the user explicitly requests it.
+
+Repository invariant: master's tip is never RED. Every commit that becomes
+master's tip is green under the native suite and, once `v2/` exists on master,
+under the `v2` `host` and `host-oracle` presets. Fixture-less v2 core work
+therefore stays branch-only (`agent/v2-core-scaffold`) and lands on master only
+through an integration branch whose tip has been verified green under both
+presets after real fixtures are promoted; that merge is an ordinary merge, and a
+squash requires the user's explicit approval.

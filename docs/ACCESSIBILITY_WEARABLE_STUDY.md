@@ -224,7 +224,7 @@ ESP32 HAL leaves mutex, IRQ, persistence, and reboot hooks empty. The compile
 also exposed Robus warnings that reinforce avoiding the physical network on a
 single-board wearable.
 
-New `imu-motion`, `blink-dsp`, `profile`, and `AccessIntent` code will therefore
+New `imu-motion`, `blink-dsp`, `blink-code`, `profile`, and `AccessIntent` code will therefore
 use pure, allocation-free APIs and fixed-size typed contracts that can be
 wrapped by Luos without depending on it. The synchronous fail-closed reducer
 and release-all path remain outside Luos. A later diagnostic-only spike may use

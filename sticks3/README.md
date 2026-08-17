@@ -242,11 +242,17 @@ mouse mode while armed. Lock it first.
 
 ## Diagnostic output
 
-USB CDC runs at 115200 baud. After an authorized upload, monitor with:
+USB CDC runs at 115200 baud and is write-only: the firmware reads nothing from
+the host, and the large blue Button A is the sole application input. After an
+authorized upload, monitor with:
 
 ```sh
 platformio device monitor --baud 115200
 ```
+
+Monitor-only trace capture for the v2 fixtures uses
+`tools/capture_session.py` (see `../docs/V2_TRACE_CAPTURE_PROTOCOL.md`); it
+never writes to the port and never uploads.
 
 A one-hertz `STATUS` record repeats the detected board, mode, arming state,
 BMI270/calibration state, IMU-blink validation, IR state, OTA state, both
@@ -301,6 +307,11 @@ decides it.
 
 Upload only after identifying the board and its serial port explicitly.
 Keep the board motionless until the motion screen reports `READY`.
+
+Fresh v2 trace fixtures are captured with this same firmware and no upload:
+follow `../docs/V2_TRACE_CAPTURE_PROTOCOL.md` (multi-run matrix inside the
+guided 6/15/12 s stages, deliberate gestures only during `BLINK_FIRMLY`,
+per-session caps, acceptance by designated run ID).
 
 For the IMU click gate, mount the device firmly in its intended position. Tap
 Button A from motion mode, then follow all three measured stages:

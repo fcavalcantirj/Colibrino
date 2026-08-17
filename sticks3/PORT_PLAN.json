@@ -18,16 +18,24 @@
       "name": "Oracle Loop",
       "local_path": "/Users/fcavalcanti/dev/oracle-loop",
       "remote": "https://github.com/fcavalcantirj/oracle-loop",
+      "main_commit": "3cf1c30",
       "engine_stack_branch": "dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512",
       "engine_stack_commit": "3c67984",
-      "architecture_branch": "agent/colibrino-v2-luos-qualification",
-      "architecture_commit": "84b5bea",
+      "engine_stack_note": "The engine branch tip 3c67984 is itself the v2 SPEC commit and the ratified v2 oracle map b932e38 is on the same branch; the last engine code commit is 6377bd9.",
+      "luos_qualification_branch": "agent/colibrino-v2-luos-qualification",
+      "luos_qualification_commit": "84b5bea",
+      "round_one_corrections_branch": "agent/colibrino-v2-round-one-corrections",
+      "round_one_corrections_commit": "c7a82ac06ebfd72016082321588daa97d30c2c1b",
+      "round_one_corrections_note": "Stacked on 84b5bea; restores the owner-ratified three-rule safety list, records the canonical round-one unit set as PROPOSED, the capture-path decision, the v2/ paths and presets, and untracks .coverage. A later Oracle state-handoff commit may advance this branch; Colibrino records only this commit and does not chase it.",
+      "stack_order": ["3cf1c30", "3c67984", "84b5bea", "c7a82ac"],
       "authority": "Executable oracle map, specification, and assisted branch-only implementation workflow. Its stacked engine and Colibrino documentation must not be merged, rebased, squashed, or rewritten without the repository's exact user merge grant."
     }
   ],
   "architecture_decisions": {
     "luos": "Conditionally adopt Luos-compatible fixed-size service contracts from scratch, but keep pure DSP, the AccessIntent authorization reducer, and synchronous release-all independent of Luos. Production Luos use requires the diagnostic-only localhost StickS3 qualification task to pass; Robus is excluded from the first wearable.",
-    "round_one": "Fresh StickS3 BMI270 traces, immutable fixtures, pure blink-dsp, and negative AccessIntent authorization oracles precede the Luos spike. Voice is round two and does not block head-motion and blink work.",
+    "round_one": "Fresh StickS3 BMI270 traces, immutable fixtures, pure blink-dsp (impulse events only), the PROPOSED blink-code temporal matcher, and negative AccessIntent authorization oracles precede the Luos spike. imu-motion is contract-only in the first scaffold. Voice is round two and does not block head-motion and blink work.",
+    "capture_path": "The existing guided IMU probe already emits the timestamped BMI270 accel+gyro stream but only inside its fixed 6 s still / 15 s deliberate / 12 s head stages with three stage labels and no host command channel (CDC is write-only). Round-one fixtures are produced with the installed firmware and no upload through a multi-run matrix with host-side labels; every deliberate gesture happens only inside BLINK_FIRMLY and the still and head stages remain genuine controls in every run. A free-run capture stage is an optional later firmware extension. See docs/V2_TRACE_CAPTURE_PROTOCOL.md.",
+    "master_invariant": "master's tip is never RED: every commit that becomes master's tip is green under the native suite and, once v2/ exists on master, under the v2 host and host-oracle presets. Fixture-less v2 core work stays branch-only and lands only through a green integration branch.",
     "fallback": "The same typed contracts must work over an internal fixed-capacity event bus so a failed Luos qualification discards no DSP, fixture, or oracle work."
   },
   "validated_facts": [
@@ -247,10 +255,10 @@
       "status": "specified_waiting_for_fresh_traces",
       "acceptance": [
         "Fetch both Colibrino and /Users/fcavalcanti/dev/oracle-loop and record the exact heads before each oracle run.",
-        "Capture timestamped 100-200 Hz BMI270 traces for stillness, head sweeps, hard and natural blinks, and confounders using an explicitly authorized StickS3 session.",
+        "Capture timestamped BMI270 accel+gyro traces (nominal 200 Hz, about 165 Hz effective, per-row usec kept) for stillness, head sweeps, single hard blinks, natural blinks, confounders, coded double-pause-double groups (three per BLINK_FIRMLY window), and an evenly spaced four-blink negative, using the installed firmware in an explicitly authorized monitor-only StickS3 session (no upload). Every deliberate gesture happens only inside BLINK_FIRMLY; KEEP_HEAD_STILL and MOVE_HEAD stay genuine controls in every run.",
         "Commit de-identified labeled fixtures to Colibrino as immutable evidence; raw private captures remain outside Git when they can identify the user.",
-        "Implement blink-dsp as a pure host-testable unit whose output is checked against expected events and tolerances from the Oracle map.",
-        "Implement negative AccessIntent authorization oracles proving that an expired, malformed, duplicated, low-confidence, unarmed, or unhealthy-producer event emits no action and releases held output.",
+        "Implement blink-dsp as a pure host-testable unit that ends at IMPULSE/CANCEL events, and blink-code as the temporal double-pause-double matcher that alone produces a click candidate; both are checked against expected events and tolerances from the Oracle map and against the v1 ImuBlinkDetector sample-for-sample.",
+        "Implement negative AccessIntent authorization oracles proving that an invalid or malformed, stale, expired, duplicated, low-confidence, unarmed, unhealthy-producer, queue-fault, disconnected-transport, or low-battery event emits no action and releases held output, and that exactly one authorized, armed, fresh, healthy candidate emits exactly one action.",
         "Limit Oracle Loop changes to its mapped authority and stacked branches; traces, tests, feel constants, board glue, HID and BLE output, and physical acceptance remain human-owned.",
         "Never merge, rebase, squash, or rewrite the Oracle Loop stack without its exact user merge grant."
       ]
@@ -260,7 +268,7 @@
       "name": "Diagnostic-only Luos qualification",
       "status": "architecture_audited_not_implemented",
       "acceptance": [
-        "Keep the pure blink, motion, profile, and AccessIntent APIs free of Luos types and preserve a build-time internal bounded-bus fallback.",
+        "Keep the pure imu-motion, blink-dsp, blink-code, profile, and access-intent APIs free of Luos types and preserve a build-time internal bounded-bus fallback.",
         "Compile Luos 3.1.0 for the exact StickS3 target in a separate environment with local services only and no Robus, topology network, gate, or Luos remote updater.",
         "Run Luos from one documented owner task or replace every relevant no-op mutex and critical-section hook with tested ESP32-S3 synchronization.",
         "Measure incremental flash, internal RAM, PSRAM, loop time, producer-to-consumer latency, and jitter against a no-Luos build at 100-200 Hz BMI270 load.",
@@ -268,6 +276,21 @@
         "Prove composite USB CDC and locked HID, authenticated OTA maintenance mode, and later audio load independently and together on the exact StickS3.",
         "Queue or service failure becomes an explicit unhealthy-producer state that suppresses action; synchronous release-all never depends on Luos delivery.",
         "Do not make Luos a production dependency or authorization path until every software and physical gate is retained as evidence."
+      ]
+    },
+    {
+      "id": "T14",
+      "name": "v2 pure-core host scaffold",
+      "status": "planned_branch_only",
+      "core_scaffold_branch": null,
+      "core_scaffold_commit": null,
+      "acceptance": [
+        "v2/ is a self-contained C11 CMake project with vendored Unity 2.6.1, -Wall -Wextra -Werror (C-only prototype warnings), clang-tidy only when available, and presets host (developer, always green; golden tests skip with an explicit no-fixtures message) and host-oracle (zero fixtures fail).",
+        "Fixed-size event contracts: 16-byte header (magic, version, kind, producer, size, seq, t_ms) plus 8-byte bodies, static-asserted; wraparound-safe timestamp and sequence comparison; bounded TTL horizon; explicit little-endian encode/decode with no raw struct memcpy; header validation before any producer-indexed state.",
+        "access-intent reducer green on the ten negative oracles, the positive path, property fuzz, and rollover tests; every fault yields no action plus release-all.",
+        "blink-dsp ends at impulse events; blink-code produces the coded click candidate; the pipeline reproduces sticks3 ImuBlinkDetector sample-for-sample on synthetic patterns and PRNG fuzz including timestamp wrap; golden tests read committed NAME.csv plus derived NAME.labels.tsv and are skipped or failing only for lack of promoted fixtures.",
+        "imu-motion is contract-only (header) in this scaffold; its implementation and differential test are a later commit.",
+        "The scaffold is branch-only and lands on master only through the Step 6 integration branch whose tip is green under host and host-oracle after real fixtures are promoted; master's tip is never RED."
       ]
     }
   ],
@@ -317,6 +340,7 @@
     "Can Nicla Voice provide robust BLE HID, high-rate motion, personalized audio inference, and fail-closed reconnect behavior?",
     "Can localhost-only Luos on the exact StickS3 sustain full IMU, USB, OTA, and later audio load without drops, jitter, watchdog resets, or cross-task races?",
     "Does a one-owner-task Luos design remain simple enough to justify its runtime over the internal bounded-bus fallback?",
-    "Which fresh traces are safe to commit as immutable Oracle fixtures, and which must stay private because they could identify the user?"
+    "Which fresh traces are safe to commit as immutable Oracle fixtures, and which must stay private because they could identify the user? Default: talking, chewing, and walking confounders stay private; every other run is committable only after an explicit clearance line in session.json.",
+    "Does the current double-pause-double gesture pass the two designated consecutive standard runs after fresh remounts under the round-one capture protocol, with zero control-stage sequences and no fatigue?"
   ]
 }

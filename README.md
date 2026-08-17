@@ -47,15 +47,19 @@ The from-scratch v2 specification is coordinated with the sibling
 `/Users/fcavalcanti/dev/oracle-loop` repository. Colibrino owns firmware,
 hardware traces, tests, device glue, and physical acceptance; Oracle Loop owns
 the executable oracle map and assisted implementation workflow. Its current v2
-documents remain on an unmerged stacked branch, so synchronizing the repository
-does not authorize merging that stack.
+documents remain on unmerged stacked branches, so synchronizing the repository
+does not authorize merging that stack. The v2 pure host core (`v2/`, C11,
+CMake + Unity) is developed branch-only until real trace fixtures exist; the
+capture protocol and monitor-only tooling live in
+[`docs/V2_TRACE_CAPTURE_PROTOCOL.md`](./docs/V2_TRACE_CAPTURE_PROTOCOL.md) and
+`sticks3/tools/`.
 
 Luos is conditionally selected as a replaceable service adapter, not as the HID
 safety kernel. Luos 3.1.0 passed its complete upstream native suite and compiled
 for ESP32-S3 with this project's pinned framework, but its ESP32 examples are
 not in upstream CI and its current HAL leaves concurrency and persistence hooks
-unfinished. New blink, motion, profile, and `AccessIntent` components will use
-pure fixed-size contracts from the start. A localhost-only, diagnostic StickS3
+unfinished. New `blink-dsp`, `blink-code`, `imu-motion`, `profile`, and `AccessIntent`
+components use pure fixed-size contracts from the start. A localhost-only, diagnostic StickS3
 spike must pass timing, queue, watchdog, USB, OTA, and failure tests before Luos
 can enter production. See the [Luos architecture decision](./docs/LUOS_ARCHITECTURE_DECISION.md).
 

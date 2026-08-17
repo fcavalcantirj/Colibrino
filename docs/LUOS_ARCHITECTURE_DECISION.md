@@ -23,11 +23,13 @@ live in `/Users/fcavalcanti/dev/Colibrino`, mirrored at
 
 The oracle specification and assisted implementation engine live in
 `/Users/fcavalcanti/dev/oracle-loop`, mirrored at
-<https://github.com/fcavalcantirj/oracle-loop>. The engine stack ends at
-`dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512` commit
-`3c67984`. The audited Colibrino v2 map, specification, contributor guide, and
-Luos qualification are stacked above it on
-`agent/colibrino-v2-luos-qualification` commit `84b5bea`. The relevant files
+<https://github.com/fcavalcantirj/oracle-loop>. Its branch
+`dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512` (tip
+`3c67984`) carries the engine plus the ratified v2 oracle map (`b932e38`) and
+the v2 SPEC (`3c67984` itself); `agent/colibrino-v2-luos-qualification`
+(`84b5bea`) adds `docs/10` and the contributor guide and revises the map, SPEC,
+README, and STATE; `agent/colibrino-v2-round-one-corrections` (`c7a82ac`, stacked
+on `84b5bea`) holds the round-one corrections. The relevant files
 are `AGENTS.md`, `docs/09-colibrino-v2-multimodal-accessibility.md`,
 `docs/10-colibrino-v2-luos-qualification.md`,
 `docs/colibrino-v2-ORACLE-MAP.md`, `docs/colibrino-v2-SPEC.md`, and
@@ -88,9 +90,23 @@ those APIs.
 The first implementation units are pure domain components:
 
 `imu-motion` converts timestamped BMI270 samples into bounded pointer deltas.
+It is the single round-one motion unit and subsumes the Oracle map's original
+`imu-fusion` + `gesture` split; round one keeps the rate-based mapping proven in
+`sticks3` (`MotionController` is the differential reference) and defers Mahony
+or orientation fusion. In the first v2 scaffold it is contract-only (types and
+prototypes); its implementation and differential test are a later commit.
 
 `blink-dsp` converts immutable labeled traces or live samples into candidate
-blink events with confidence, timing, and quality fields.
+impulse events (`IMPULSE` with duration, or `CANCEL` on head motion, an
+overlong hold, or the first-sample quiet gate) with confidence and timing
+fields. It ends at impulses and never emits a click.
+
+`blink-code` consumes the `blink-dsp` event stream and produces a click
+candidate only for the temporal code double (300-700 ms), pause (800-1400 ms),
+double, with a 1500 ms click refractory; single, incomplete, and evenly spaced
+four-blink inputs never produce a candidate. A thin blink pipeline composes the
+two and reproduces the v1 `ImuBlinkDetector` sample-for-sample. `blink-code` is
+recorded in the Oracle map as a PROPOSED row pending owner ratification.
 
 `access-intent` is the only authority that can accept a candidate action. It
 enforces arming, freshness, cooldown, producer health, transport health, and
@@ -135,12 +151,17 @@ work is discarded.
 
 ## Immediate work order
 
-First, capture and label fresh StickS3 BMI270 traces under the existing guarded
-firmware workflow. Second, implement `blink-dsp` as a pure host-tested unit from
-the Oracle map and immutable fixtures. Third, implement the typed
-`AccessIntent` reducer and negative authorization oracles. Fourth, run the
-diagnostic-only local Luos spike. Voice remains a separate round-two producer
-and must not delay the head-motion and blink evidence loop.
+First, capture and label fresh StickS3 BMI270 traces with the existing guarded
+firmware and the monitor-only tooling in `sticks3/tools/`, following
+`docs/V2_TRACE_CAPTURE_PROTOCOL.md` (multi-run matrix inside the fixed
+6/15/12 s guided stages; every deliberate gesture only inside `BLINK_FIRMLY`;
+no upload required). Second, keep the pure `blink-dsp`, `blink-code`,
+`access-intent`, and `profile` units with their synthetic, differential, and
+negative-authorization tests on the branch-only `v2/` scaffold; promote cleared
+fixtures so the golden suites become the oracle. Third, run the diagnostic-only
+local Luos spike only after those suites are green on real fixtures. Voice
+remains a separate round-two producer and must not delay the head-motion and
+blink evidence loop.
 
 ## Primary sources
 
