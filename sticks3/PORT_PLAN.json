@@ -7,6 +7,29 @@
     "transport": "native USB composite CDC and HID mouse, plus authenticated Wi-Fi OTA when ignored credentials are present",
     "current_device_policy": "Before flashing a StickS3 used by another project, identify its serial port and preserve the complete flash under ignored .device-backups. The tested unit has a verified recovery image. OTA must resolve sticks3-ptt.local and match the saved AC:27:6E:D2:68:B8 hardware MAC; bedside-countdown-s3 is a separate device and must never be targeted."
   },
+  "related_repositories": [
+    {
+      "name": "Colibrino",
+      "local_path": "/Users/fcavalcanti/dev/Colibrino",
+      "remote": "https://github.com/fcavalcantirj/Colibrino",
+      "authority": "Firmware, portable domain code, immutable captures and fixtures, tests, board glue, HID and BLE output, physical validation, and release safety."
+    },
+    {
+      "name": "Oracle Loop",
+      "local_path": "/Users/fcavalcanti/dev/oracle-loop",
+      "remote": "https://github.com/fcavalcantirj/oracle-loop",
+      "engine_stack_branch": "dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512",
+      "engine_stack_commit": "3c67984",
+      "architecture_branch": "agent/colibrino-v2-luos-qualification",
+      "architecture_commit": "84b5bea",
+      "authority": "Executable oracle map, specification, and assisted branch-only implementation workflow. Its stacked engine and Colibrino documentation must not be merged, rebased, squashed, or rewritten without the repository's exact user merge grant."
+    }
+  ],
+  "architecture_decisions": {
+    "luos": "Conditionally adopt Luos-compatible fixed-size service contracts from scratch, but keep pure DSP, the AccessIntent authorization reducer, and synchronous release-all independent of Luos. Production Luos use requires the diagnostic-only localhost StickS3 qualification task to pass; Robus is excluded from the first wearable.",
+    "round_one": "Fresh StickS3 BMI270 traces, immutable fixtures, pure blink-dsp, and negative AccessIntent authorization oracles precede the Luos spike. Voice is round two and does not block head-motion and blink work.",
+    "fallback": "The same typed contracts must work over an internal fixed-capacity event bus so a failed Luos qualification discards no DSP, fixture, or oracle work."
+  },
   "validated_facts": [
     {
       "fact": "The internal IMU is a BMI270 at I2C address 0x68 on SDA GPIO47 and SCL GPIO48.",
@@ -75,6 +98,14 @@
     {
       "fact": "Arduino Nicla Voice is a credible lower-power second prototype, not a selected replacement.",
       "validation": "Arduino documents a 22.86 mm, approximately 2 g board with NDP120, nRF52832 BLE, BMI270, microphone, 16 MB flash, and battery support; its factory Alexa demo measurements are 0.8 mA BLE-off and 2.4 mA with advertising plus one-hertz sensor polling. BLE HID and high-rate multimodal use remain unproven."
+    },
+    {
+      "fact": "Luos Engine 3.1.0 is source-compatible with the ESP32-S3 toolchain used by the current Colibrino target, but that does not establish runtime safety on StickS3.",
+      "validation": "A no-upload temporary build succeeded for esp32-s3-devkitc-1 with espressif32 6.12.0 and Arduino-ESP32 2.0.17, and all 121 upstream native Unity cases passed. The build included a reference Robus example and is not a Colibrino memory or latency measurement."
+    },
+    {
+      "fact": "Current upstream Luos ESP32 support requires a Colibrino-specific qualification before production adoption.",
+      "validation": "The official CI excludes ESP32 examples; open upstream issues retain an ESP build gap and watchdog resets with the network; the ESP32 HAL leaves mutex, general IRQ, flash metadata, reboot, and node-ID hooks empty; and the ESP32-S3 reference build emitted Robus timer, pointer-cast, and global-symbol warnings."
     }
   ],
   "tasks": [
@@ -209,6 +240,35 @@
         "StickS3 and Nicla Voice are compared using the same motion latency, wake accuracy, negative-audio soak, battery, weight, pairing, and recovery protocol.",
         "No final board or sensor purchase decision is made without physical evidence."
       ]
+    },
+    {
+      "id": "T12",
+      "name": "Cross-repository round-one oracle loop",
+      "status": "specified_waiting_for_fresh_traces",
+      "acceptance": [
+        "Fetch both Colibrino and /Users/fcavalcanti/dev/oracle-loop and record the exact heads before each oracle run.",
+        "Capture timestamped 100-200 Hz BMI270 traces for stillness, head sweeps, hard and natural blinks, and confounders using an explicitly authorized StickS3 session.",
+        "Commit de-identified labeled fixtures to Colibrino as immutable evidence; raw private captures remain outside Git when they can identify the user.",
+        "Implement blink-dsp as a pure host-testable unit whose output is checked against expected events and tolerances from the Oracle map.",
+        "Implement negative AccessIntent authorization oracles proving that an expired, malformed, duplicated, low-confidence, unarmed, or unhealthy-producer event emits no action and releases held output.",
+        "Limit Oracle Loop changes to its mapped authority and stacked branches; traces, tests, feel constants, board glue, HID and BLE output, and physical acceptance remain human-owned.",
+        "Never merge, rebase, squash, or rewrite the Oracle Loop stack without its exact user merge grant."
+      ]
+    },
+    {
+      "id": "T13",
+      "name": "Diagnostic-only Luos qualification",
+      "status": "architecture_audited_not_implemented",
+      "acceptance": [
+        "Keep the pure blink, motion, profile, and AccessIntent APIs free of Luos types and preserve a build-time internal bounded-bus fallback.",
+        "Compile Luos 3.1.0 for the exact StickS3 target in a separate environment with local services only and no Robus, topology network, gate, or Luos remote updater.",
+        "Run Luos from one documented owner task or replace every relevant no-op mutex and critical-section hook with tested ESP32-S3 synchronization.",
+        "Measure incremental flash, internal RAM, PSRAM, loop time, producer-to-consumer latency, and jitter against a no-Luos build at 100-200 Hz BMI270 load.",
+        "Sustain queue saturation, timeout, sequence, duplicate, overflow, and restart fault injection without a silent drop, stale action, watchdog reset, assert loop, or stuck button.",
+        "Prove composite USB CDC and locked HID, authenticated OTA maintenance mode, and later audio load independently and together on the exact StickS3.",
+        "Queue or service failure becomes an explicit unhealthy-producer state that suppresses action; synchronous release-all never depends on Luos delivery.",
+        "Do not make Luos a production dependency or authorization path until every software and physical gate is retained as evidence."
+      ]
     }
   ],
   "simulation_boundary": {
@@ -254,6 +314,9 @@
     "Can the intended user reliably produce a wake phrase, command, or consistent non-word sound while seated and lying down, and is Portuguese required?",
     "Can an actual WakeNet plus command build retain dual OTA in 8 MB, and what one-time cable partition migration is required?",
     "Does continuous audio plus high-rate BMI270 sampling preserve pointer timing and useful battery runtime?",
-    "Can Nicla Voice provide robust BLE HID, high-rate motion, personalized audio inference, and fail-closed reconnect behavior?"
+    "Can Nicla Voice provide robust BLE HID, high-rate motion, personalized audio inference, and fail-closed reconnect behavior?",
+    "Can localhost-only Luos on the exact StickS3 sustain full IMU, USB, OTA, and later audio load without drops, jitter, watchdog resets, or cross-task races?",
+    "Does a one-owner-task Luos design remain simple enough to justify its runtime over the internal bounded-bus fallback?",
+    "Which fresh traces are safe to commit as immutable Oracle fixtures, and which must stay private because they could identify the user?"
   ]
 }

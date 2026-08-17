@@ -41,6 +41,24 @@ TCRT5000 form factor if the IMU click experiment fails. None of those later
 hardware choices is validated or approved for purchase yet. See the complete
 [accessibility wearable architecture study](./docs/ACCESSIBILITY_WEARABLE_STUDY.md).
 
+## Colibrino v2 and Luos
+
+The from-scratch v2 specification is coordinated with the sibling
+`/Users/fcavalcanti/dev/oracle-loop` repository. Colibrino owns firmware,
+hardware traces, tests, device glue, and physical acceptance; Oracle Loop owns
+the executable oracle map and assisted implementation workflow. Its current v2
+documents remain on an unmerged stacked branch, so synchronizing the repository
+does not authorize merging that stack.
+
+Luos is conditionally selected as a replaceable service adapter, not as the HID
+safety kernel. Luos 3.1.0 passed its complete upstream native suite and compiled
+for ESP32-S3 with this project's pinned framework, but its ESP32 examples are
+not in upstream CI and its current HAL leaves concurrency and persistence hooks
+unfinished. New blink, motion, profile, and `AccessIntent` components will use
+pure fixed-size contracts from the start. A localhost-only, diagnostic StickS3
+spike must pass timing, queue, watchdog, USB, OTA, and failure tests before Luos
+can enter production. See the [Luos architecture decision](./docs/LUOS_ARCHITECTURE_DECISION.md).
+
 ## What the StickS3 port provides
 
 The new implementation uses the built-in BMI270 for pointer motion and native

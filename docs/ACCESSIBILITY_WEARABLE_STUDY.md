@@ -203,16 +203,56 @@ configuration that is not required for basic operation. Colibrino's opportunity
 is an open and affordable combination of these capabilities with personalized
 offline voice and blink input.
 
+## Luos and Oracle Loop architecture
+
+The from-scratch v2 work is coordinated with
+`/Users/fcavalcanti/dev/oracle-loop`. Colibrino remains the authority for
+firmware, physical captures, immutable fixtures, tests, feel tuning, hardware
+glue, HID/BLE output, and acceptance. Oracle Loop's engine stack ends at
+`dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512` commit
+`3c67984`; the audited v2 map, specification, and Luos qualification are on the
+new branch `agent/colibrino-v2-luos-qualification` commit `84b5bea`. Neither is
+on `main`, and the stack must not be merged without the repository's exact user
+grant.
+
+Luos is a promising service boundary, but the independent audit supports only
+conditional adoption. Luos Engine 3.1.0 passed all 121 upstream native tests and
+compiled in a temporary ESP32-S3 Arduino build using Colibrino's pinned
+toolchain. Its official ESP32 examples are nevertheless absent from current CI,
+an open issue records watchdog resets when the network is enabled, and the
+ESP32 HAL leaves mutex, IRQ, persistence, and reboot hooks empty. The compile
+also exposed Robus warnings that reinforce avoiding the physical network on a
+single-board wearable.
+
+New `imu-motion`, `blink-dsp`, `profile`, and `AccessIntent` code will therefore
+use pure, allocation-free APIs and fixed-size typed contracts that can be
+wrapped by Luos without depending on it. The synchronous fail-closed reducer
+and release-all path remain outside Luos. A later diagnostic-only spike may use
+one owner task and localhost delivery, with no Robus, only after fresh traces
+and the pure host oracle exist. Production adoption requires hardware evidence
+for message ordering and overflow, 100-200 Hz timing, watchdog stability,
+USB/OTA coexistence, and fault recovery. The full evidence, qualification gate,
+fallback bus, and cross-repository rules are in
+[`LUOS_ARCHITECTURE_DECISION.md`](./LUOS_ARCHITECTURE_DECISION.md).
+
 ## Staged implementation
 
-### Stage 0: Apple baseline
+### Stage 0: round-one evidence and pure core
+
+Capture fresh labeled StickS3 BMI270 traces, preserve them as immutable
+fixtures, and implement pure `blink-dsp` and `AccessIntent` units against the
+Oracle map. Keep the existing pointer and fail-closed HID behavior intact.
+After those oracles pass, run the diagnostic-only localhost Luos qualification
+spike; do not make Luos a release dependency yet.
+
+### Stage 1: Apple baseline
 
 Compare the current StickS3 pointer with macOS Dwell, Head Pointer, Voice
 Control, Vocal Shortcuts, Switch Control, and Live Speech. Record which signals
 the intended user can produce comfortably and repeatedly. This requires no new
 hardware.
 
-### Stage 1: isolated StickS3 audio proof
+### Stage 2: isolated StickS3 audio proof
 
 Create a separate toolchain environment, capture continuous 16 kHz mono audio,
 and detect a built-in free wake phrase plus six to ten offline commands. Emit
@@ -220,21 +260,21 @@ only diagnostics and display state. Test quiet speech, soft speech, television,
 conversation, fan noise, glasses rubbing, different microphone orientations,
 and lying versus seated use. Do not emit HID.
 
-### Stage 2: multimodal safety integration
+### Stage 3: multimodal safety integration
 
 Introduce `AccessIntent` and a central fail-closed policy reducer. Freeze motion
 during voice command windows. Add BLE HID beside the proven USB transport, an
 explicit maintenance-only Wi-Fi mode, a generic dry-contact adaptive-switch
 input, and watchdog/release behavior for every producer and transport.
 
-### Stage 3: click and hardware comparison
+### Stage 4: click and hardware comparison
 
 Complete the installed double-pause-double IMU test. If it is inconsistent,
 tiring, or produces any control event, stop tuning it and evaluate a compact
 VL53L4CD or similarly documented near-eye sensor. Compare the StickS3 with a
 Nicla Voice proof under the same motion, voice, battery, and recovery protocol.
 
-### Stage 4: custom wearable
+### Stage 5: custom wearable
 
 Select the processor only after measured evidence. Design a light glasses or
 behind-ear assembly with physical mute/arm control, charging dock or protected
@@ -272,8 +312,10 @@ single-module or flex-connected behind-ear layout is most comfortable all
 require measurement.
 
 No TCRT5000, Nicla Voice, or custom PCB purchase is justified solely by this
-study. The next evidence-producing work is the Apple baseline, isolated
-StickS3 wake-word proof, and the already prepared worn IMU blink test.
+study. The next evidence-producing work is the prepared worn IMU capture,
+immutable trace fixtures, pure blink and intent oracles, and then the
+diagnostic-only Luos spike. Apple and isolated wake-word comparisons follow
+without blocking that round-one loop.
 
 ## Primary sources
 
@@ -292,6 +334,14 @@ ESP-SR MultiNet: <https://docs.espressif.com/projects/esp-sr/en/latest/esp32s3/s
 ESP-SR benchmarks: <https://docs.espressif.com/projects/esp-sr/en/latest/esp32s3/benchmark/README.html>
 
 Arduino-ESP32 ESP-SR example: <https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP_SR/examples/Basic/Basic.ino>
+
+Luos Engine: <https://github.com/Luos-io/luos_engine>
+
+Luos service architecture: <https://www.luos.io/docs/luos-technology/services>
+
+Luos ESP32 CI issue: <https://github.com/Luos-io/luos_engine/issues/423>
+
+Luos ESP32 watchdog issue: <https://github.com/Luos-io/luos_engine/issues/464>
 
 Apple Vocal Shortcuts: <https://support.apple.com/guide/mac-help/use-vocal-shortcuts-mchlf4548bb6/mac>
 

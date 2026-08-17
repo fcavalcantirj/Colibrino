@@ -50,6 +50,42 @@ therefore remains gated off until a fresh current-boot probe passes.
 facts, task status, simulation boundaries, and the TCRT5000 purchase decision.
 Keep it syntactically valid and consistent with the prose documentation.
 
+## Cross-repository Colibrino v2 workflow
+
+Treat `/Users/fcavalcanti/dev/Colibrino` and
+`/Users/fcavalcanti/dev/oracle-loop` as one coordinated program with separate
+authority. Colibrino owns firmware, portable domain code, immutable hardware
+traces, physical evidence, and release safety. Oracle Loop owns the executable
+oracle map, specification, and assisted implementation loop. Its remote is
+`https://github.com/fcavalcantirj/oracle-loop`.
+
+Oracle Loop's engine stack ends at
+`dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512` commit
+`3c67984`. The audited Colibrino v2 documents are stacked above it on
+`agent/colibrino-v2-luos-qualification` commit `84b5bea`; neither branch is on
+`main`. Read `AGENTS.md`, `STATE.md`,
+`docs/09-colibrino-v2-multimodal-accessibility.md`,
+`docs/10-colibrino-v2-luos-qualification.md`,
+`docs/colibrino-v2-ORACLE-MAP.md`, `docs/colibrino-v2-SPEC.md`, and
+`engine/README.md` before v2 architecture or oracle work. Fetch both repositories
+before planning and record the exact heads used. Never merge, rebase, squash, or
+rewrite the Oracle stack without its exact user merge grant; fetch and push do
+not grant merge authority.
+
+Round one is head motion plus blink. Fresh StickS3 traces become immutable
+fixtures in Colibrino, pure domain units are implemented against them, and only
+then may Oracle Loop generate within its declared file authority. Feel tuning,
+trace labels, tests, board glue, HID/BLE output, and physical acceptance remain
+human-owned. Voice is a round-two producer and must not block round one.
+
+Read `docs/LUOS_ARCHITECTURE_DECISION.md` before introducing Luos. Use
+Luos-compatible fixed-size service contracts from scratch, but keep DSP,
+`AccessIntent`, and the synchronous release-all path independent of Luos. The
+first Luos experiment is a localhost-only, diagnostic-only StickS3 spike with
+one task owning the runtime and no Robus. Do not add Luos to production or put
+HID authorization behind it until the documented concurrency, queue, latency,
+watchdog, USB, OTA, and hardware gates pass.
+
 ## Multimodal accessibility direction
 
 Read `docs/ACCESSIBILITY_WEARABLE_STUDY.md` before voice, Bluetooth, click-sensor,

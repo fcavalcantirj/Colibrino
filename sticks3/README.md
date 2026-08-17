@@ -62,6 +62,14 @@ when ignored `include/colibrino_secrets.h` exists. Starting an update locks HID,
 releases mouse buttons, invalidates the current blink gate, cancels capture, and
 forces external 5 V off before the updater takes control of the loop.
 
+Future v2 work is coordinated with `/Users/fcavalcanti/dev/oracle-loop`, but the
+current hardware-proven application remains the control and regression
+baseline. New DSP and `AccessIntent` units must stay pure and host-testable.
+Luos-compatible message adapters may be built later, but Luos is not yet a
+production dependency and may never own HID authorization or release-all. The
+exact conditional-adoption evidence and diagnostic spike are in
+[`docs/LUOS_ARCHITECTURE_DECISION.md`](../docs/LUOS_ARCHITECTURE_DECISION.md).
+
 ## Safe build and test
 
 Install PlatformIO, then run from this directory:
