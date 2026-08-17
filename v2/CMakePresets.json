@@ -1,0 +1,62 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 23, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "host",
+      "displayName": "Host (developer, golden tests skip without fixtures)",
+      "binaryDir": "${sourceDir}/build-host",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "COLIBRINO_V2_ORACLE": "OFF"
+      }
+    },
+    {
+      "name": "host-oracle",
+      "displayName": "Host oracle gate (zero fixtures = FAIL)",
+      "binaryDir": "${sourceDir}/build-host-oracle",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "COLIBRINO_V2_ORACLE": "ON"
+      }
+    },
+    {
+      "name": "host-ninja",
+      "displayName": "Host (Ninja generator)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-host-ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "COLIBRINO_V2_ORACLE": "OFF"
+      }
+    },
+    {
+      "name": "host-asan",
+      "displayName": "Host with AddressSanitizer + UBSan",
+      "binaryDir": "${sourceDir}/build-host-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "COLIBRINO_V2_ORACLE": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "host", "configurePreset": "host" },
+    { "name": "host-oracle", "configurePreset": "host-oracle" },
+    { "name": "host-ninja", "configurePreset": "host-ninja" },
+    { "name": "host-asan", "configurePreset": "host-asan" }
+  ],
+  "testPresets": [
+    { "name": "host", "configurePreset": "host", "output": { "outputOnFailure": true } },
+    { "name": "host-oracle", "configurePreset": "host-oracle", "output": { "outputOnFailure": true } },
+    { "name": "host-ninja", "configurePreset": "host-ninja", "output": { "outputOnFailure": true } },
+    { "name": "host-asan", "configurePreset": "host-asan", "output": { "outputOnFailure": true } }
+  ]
+}

@@ -1,0 +1,20 @@
+# Optional; only applied when clang-tidy is on PATH (cmake/clang_tidy.cmake).
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -misc-include-cleaner,
+  -bugprone-easily-swappable-parameters,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp
+WarningsAsErrors: ''
+HeaderFilterRegex: 'core/include/colibrino/v2/.*'
+FormatStyle: none
