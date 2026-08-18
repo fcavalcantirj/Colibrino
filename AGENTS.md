@@ -175,7 +175,13 @@ restarts whenever motion makes the sample standard deviation unsafe.
 
 The physically verified large blue Button A owns the application workflow; the
 side power/reset control is not an application input, and the USB CDC channel
-is write-only (the firmware reads nothing from the host). Button A cycles IR probe,
+is write-only (the firmware reads nothing from the host). The Wi-Fi telemetry
+mirror on TCP port 35533 is equally output-only: the device reads and discards
+every inbound byte, so the socket can never become a command channel. Worn
+trace capture is cable-free by decision (a USB cable is a physical anchor that
+distorts the measured blink impulses); the free-run capture stage
+(CAPTURE_FREE_RUN) never sets the blink-validation gate and never counts
+toward worn acceptance. Button A cycles IR probe,
 motion monitor, and mouse mode only while mouse output is locked. In mouse mode,
 holding A for two seconds after calibration toggles armed versus locked output.
 The device cannot leave mouse mode while armed.

@@ -210,7 +210,7 @@
         "The upload wrapper refuses any resolved device whose ARP MAC differs from AC:27:6E:D2:68:B8.",
         "One cable flash installed the listener on the explicitly matched AC:27:6E:D2:68:B8 ROM download port.",
         "After bootstrap, two authenticated OTA round trips succeeded; each reboot returned with HID locked, IR off, BMI270 calibrated, blink clicks disabled, and OTA ready while bedside-countdown-s3 remained untouched.",
-        "A third authenticated OTA upload installed the double-pause-double build before USB was disconnected; post-reboot CDC confirmation remains pending."
+        "A third authenticated OTA upload installed the double-pause-double build before USB was disconnected; its dedicated post-reboot CDC confirmation was never performed over USB and can no longer be (the device now operates cable-free by decision). It is superseded by the fourth authorized OTA (wireless telemetry build, same double-pause-double detector): that build's post-reboot state is confirmed over the read-only TCP telemetry channel instead. The detector itself remains hardware-unvalidated until a fresh worn probe passes; blink clicking stays gated off."
       ]
     },
     {
@@ -292,6 +292,21 @@
         "blink-dsp ends at impulse events; blink-code produces the coded click candidate; the pipeline reproduces sticks3 ImuBlinkDetector sample-for-sample on synthetic patterns and PRNG fuzz including timestamp wrap; golden tests read committed NAME.csv plus derived NAME.labels.tsv and are skipped or failing only for lack of promoted fixtures.",
         "imu-motion is contract-only (header) in this scaffold; its implementation and differential test are a later commit.",
         "The scaffold is branch-only and lands on master only through the Step 6 integration branch whose tip is green under host and host-oracle after real fixtures are promoted; master's tip is never RED."
+      ]
+    },
+    {
+      "id": "T15",
+      "name": "Wireless telemetry mirror, free-run capture, and build id",
+      "status": "implemented_pending_hardware",
+      "acceptance": [
+        "A USB cable is a physical anchor on the head mount and distorts the measured blink impulses, so worn capture runs cable-free: the firmware mirrors every diagnostics byte to a read-only TCP stream (port 35533, one client, inbound bytes discarded so the socket can never become a command channel; Button A remains the sole input).",
+        "Mirroring is non-blocking by construction: fixed 32 KB ring, bounded per-pass drain via raw MSG_DONTWAIT send, oldest whole lines dropped on overflow with an explicit EVENT,TELEMETRY,DROPPED counter; WiFiClient::write is never used for bulk data.",
+        "Every IMU row keeps its device-side ms and usec timestamps, so transport jitter cannot corrupt timing; missing samples are visible as usec-cadence gaps and transport loss is separately counted - wireless capture is self-diagnosing where USB CDC dropped silently.",
+        "The free-run stage CAPTURE_FREE_RUN (second Button A tap during PREPARE_STILL; stop by tap or 90 s cap) streams IMU rows for 30 s rest baselines and long confounders, never sets imu_blink_validated, reports RESULT,IMU_BLINK,NOT_PROVEN with a trailing free= count, and never counts toward worn acceptance.",
+        "STATUS gains trailing build=, batt=, tele= fields and boot emits EVENT,BUILD,<sha> (git identity injected at compile time), so the running image is identifiable without USB.",
+        "The host capture tool gains --tcp with the same ping+ARP-MAC identity guard as the OTA uploader, half-closes its send side immediately (shutdown(SHUT_WR)), requires the EVENT,TELEMETRY,CONNECTED greeting within 3 seconds, and treats 5 seconds of silence as a guarded-reconnect trigger.",
+        "Security posture is recorded: unauthenticated read-only telemetry on the trusted home LAN, single client, no credential ever in the stream; a LAN peer can read head-motion telemetry while the port is up.",
+        "Hardware gates pending: the fourth authorized OTA upload; post-reboot verification over TCP (greeting sha matches the built sha; STATUS armed=0 ir=0 calibrated=1 imu_blink=0 ota=READY tele=1); then the no-cable equivalence acceptance (effective rate within 5% of the retained USB baseline, DROPPED 0 or under 0.1%, comparable usec-gap histogram, replay parity, one 30 s free-run block)."
       ]
     }
   ],

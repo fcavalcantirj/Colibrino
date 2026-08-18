@@ -88,8 +88,17 @@ into A or B.
 ## 5. Host tooling
 
 All host tools live in `sticks3/tools/` and need only the Python standard
-library plus `pyserial` for the live path (`--simulate` and the fixture tool
-work without it). Run them from `sticks3/`.
+library plus `pyserial` for the live USB path (`--tcp`, `--simulate` and the
+fixture tool work without it). Run them from `sticks3/`.
+
+**Wireless is the default transport.** A USB cable is a physical anchor on the
+~20 g head mount and distorts the blink impulses being measured, so worn
+sessions run cable-free over the firmware's read-only TCP telemetry mirror
+(port 35533, one client, inbound bytes discarded by the device). Every IMU row
+is timestamped on the device before transport, and transport loss is explicit
+(`EVENT,TELEMETRY,DROPPED,<total>`), so wireless capture is as trustworthy as
+USB was - see the equivalence acceptance in section 5b. The USB path below
+remains available for bench diagnostics only.
 
 1. **Discover the device descriptor** (reads USB descriptors only; opens no port):
 
@@ -105,7 +114,21 @@ work without it). Run them from `sticks3/`.
 2. **Add that line to `.env`** (repo root, git-ignored). The capture tool
    parses only that key and never prints other values.
 
-3. **Capture with the plan**:
+3. **Capture with the plan** (wireless, the default for worn sessions):
+
+       python3 tools/capture_session.py --tcp --plan tools/capture_plans/round1.json --plan-session A
+       python3 tools/capture_session.py --tcp --plan tools/capture_plans/round1.json --plan-session B
+
+   `--tcp` resolves `sticks3-ptt.local` (override host/port with
+   `--tcp HOST[:PORT]` or `COLIBRINO_OTA_HOST` in the ignored `.env`),
+   refuses unless the ARP MAC equals `COLIBRINO_OTA_EXPECTED_MAC` (the same
+   guard the OTA uploader uses; `bedside-countdown-s3` is refused by
+   construction), connects, immediately half-closes its send side
+   (`shutdown(SHUT_WR)`) so the host physically cannot send a byte, and
+   aborts unless the device greets with `EVENT,TELEMETRY,CONNECTED,<build>`
+   within 3 seconds. Liveness: the 1 Hz STATUS stream means 5 seconds of
+   silence triggers a guarded reconnect. USB capture (below) needs
+   `COLIBRINO_USB_SERIAL`:
 
        python3 tools/capture_session.py --plan tools/capture_plans/round1.json --plan-session A
        python3 tools/capture_session.py --plan tools/capture_plans/round1.json --plan-session B --wait-for-port
@@ -166,6 +189,22 @@ work without it). Run them from `sticks3/`.
    (the plan is the one recorded in the capture's `session.json`); anything
    else, or a capture without a plan, is `REJECT` and the `ACCEPTANCE` line
    names the rule that was applied.
+
+## 5b. Wireless equivalence acceptance (once, bench, before worn sessions)
+
+One desk run over `--tcp` after the telemetry OTA, no cable ever:
+
+1. Per-stage `effective_rate_hz` within 5% of the retained USB bench baseline
+   (about 169-170 Hz).
+2. `EVENT,TELEMETRY,DROPPED` total 0 (tolerate under 0.1% of rows).
+3. Zero unknown-class lines beyond the boot banner.
+4. The device-time `usec` gap histogram comparable to the retained USB logs
+   (ground truth is device-side and transport-independent by construction).
+5. `split_sessions` plus per-session replay parity green on the TCP `raw.log`.
+6. One 30-second free-run rest capture completes end to end (section 12).
+
+Record the numbers in `PROJECT_KNOWLEDGE.md` as observations. Only then run
+worn sessions.
 
 ## 6. Device checklist
 
@@ -306,33 +345,29 @@ the cue, is the fixture anchor.
 4. The commit that adds promoted fixtures is a human commit; nothing here
    automates it.
 
-## 12. Optional firmware extension: free-run capture (not built)
+## 12. Free-run capture (built; hardware validation pending)
 
-The guided probe is enough for round one. A free-run capture would only be
-worth an authorized fourth OTA plus a post-reboot check if a requirement
-appears for at least 30 seconds of contiguous rest or more than 15 seconds of
-continuous confounders inside one capture. Design sketch, so that the decision
-can be taken without rediscovering the code:
+Built as specified by the earlier design sketch, delivered in the same
+authorized fourth OTA as the telemetry mirror:
 
-* Add `ImuProbeStage::kCaptureFreeRun` to the stage enum
-  (`sticks3/src/main.cpp:51-60`) and name it `CAPTURE_FREE_RUN` in
-  `imuProbeStageName`; make `imuProbeCapturing()` include it
-  (`sticks3/src/main.cpp:138-164`).
-* Entry: a second Button A tap while the probe is in `PREPARE_STILL` converts
-  the run to free-run instead of advancing to `KEEP_HEAD_STILL`
-  (`handleButtons`, `sticks3/src/main.cpp:734-738`; today a tap in
-  `PREPARE_STILL` is ignored because the probe is neither idle nor at result).
-* Clock: `updateImuProbeClock` (`sticks3/src/main.cpp:202-250`) ends free-run
-  at a hard 90-second cap and goes straight to `kResult`, printing
-  `EVENT,IMU_PROBE_COMPLETE,samples=N` and `RESULT,IMU_BLINK,NOT_PROVEN,...`;
-  free-run **never** sets `imu_blink_validated`.
-* Sampling: the existing IMU print path (`sticks3/src/main.cpp:609-624`)
-  emits `IMU,<ms>,<usec>,CAPTURE_FREE_RUN,...` rows; sequence counting is
-  disabled in that stage so no candidate event can be attributed to it.
-* OTA cancels it exactly as `lockForOta()` cancels every probe today.
-* Host side: `replay_imu_capture.cpp` ignores unknown stages already, and the
-  fixture tool would label a free-run block as `rest` or `confounder` from the
-  spoken cues only.
-
-Do not build this speculatively. It changes an installed image and costs a
-fourth OTA round trip; the round-one plan above works without it.
+* `ImuProbeStage::kCaptureFreeRun`, stage string `CAPTURE_FREE_RUN`;
+  `imuProbeCapturing()` includes it, so the ordinary
+  `IMU,<ms>,<usec>,CAPTURE_FREE_RUN,...` rows stream during the block.
+* Entry: start a guided probe (tap), then a **second tap during the
+  `PREPARE_STILL` screen** converts it to free-run. The conversion emits the
+  `EVENT,IMU_PROBE_STAGE,CAPTURE_FREE_RUN` transition line and deliberately
+  does NOT emit a second `EVENT,IMU_PROBE_STARTED` line, so every tool keeps
+  seeing exactly one session.
+* Stop: tap again, or the hard 90-second cap. Either way the block ends with
+  `EVENT,IMU_PROBE_COMPLETE,samples=N` and
+  `RESULT,IMU_BLINK,NOT_PROVEN,still=..,blink=..,head=..,free=..`.
+* Safety: free-run **never** sets `imu_blink_validated` (the RESULT is always
+  NOT_PROVEN); detector sequences during the block are counted in the
+  separate `free=` field and never in the validation predicate; the device
+  cannot leave Motion Monitor while the block runs; `lockForOta()` cancels it
+  like every probe.
+* Use it for the segments the guided windows cannot hold: 30-second
+  contiguous rest baselines and long confounders. Free-run fixtures are
+  always `review_required` and are labeled from the spoken cues only; a
+  free-run session never counts toward worn acceptance (`--accept-runs`
+  ignores it).

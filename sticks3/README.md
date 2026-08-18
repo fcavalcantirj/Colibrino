@@ -250,9 +250,19 @@ authorized upload, monitor with:
 platformio device monitor --baud 115200
 ```
 
-Monitor-only trace capture for the v2 fixtures uses
-`tools/capture_session.py` (see `../docs/V2_TRACE_CAPTURE_PROTOCOL.md`); it
-never writes to the port and never uploads.
+When the OTA build is configured and Wi-Fi is associated, the same diagnostics
+stream is mirrored to a read-only TCP port (35533, advertised as
+`colibrino-diag._tcp`): one client at a time, inbound bytes discarded, oldest
+lines dropped with an explicit `EVENT,TELEMETRY,DROPPED,<total>` counter when
+the link stalls. Boot prints `EVENT,BUILD,<sha>`, a client is greeted with
+`EVENT,TELEMETRY,CONNECTED,<sha>`, and the 1 Hz `STATUS` record ends with
+`build=<sha>,batt=<pct>,tele=<0|1>`. Worn trace capture runs cable-free over
+this mirror (`tools/capture_session.py --tcp`; see
+`../docs/V2_TRACE_CAPTURE_PROTOCOL.md`) because a USB cable is a physical
+anchor on the head mount; the USB path stays available for bench diagnostics.
+The stream is unauthenticated on the trusted home LAN - a LAN peer can read
+head-motion telemetry while the port is up; no credential ever appears in it.
+Monitor-only capture never writes to the port or socket and never uploads.
 
 A one-hertz `STATUS` record repeats the detected board, mode, arming state,
 BMI270/calibration state, IMU-blink validation, IR state, OTA state, both
