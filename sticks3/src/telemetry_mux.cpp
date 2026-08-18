@@ -299,7 +299,11 @@ void TelemetryMux::service(uint32_t now_ms) {
   }
 
   WiFiClient incoming = telemetry_server.available();
-  if (incoming) {
+  // fd(), never operator bool(): the bool conversion is connected(), whose
+  // zero-length recv probe latches false on the peer FIN. The capture host
+  // half-closes immediately after connect, so its FIN can arrive before this
+  // accept poll runs and the probe would drop the client un-greeted.
+  if (incoming.fd() >= 0) {
     // Assignment stops any previous client: a reconnecting host replaces a
     // stale connection without a device reboot.
     telemetry_client = incoming;  // assignment stops any previous client
