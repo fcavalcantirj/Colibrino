@@ -1079,6 +1079,46 @@ class TestTcpTransport(CaptureToolsBase):
         with open(os.path.join(tcp_dir, "raw.log"), "rb") as handle:
             self.assertEqual(handle.read(), greeting + log_bytes[:mid] + greeting + log_bytes[mid:])
 
+    def test_tcp_loopback_shaped_hostname_is_not_exempt(self):
+        # [TEST] '127.evil.example' is a DNS name, not a loopback address:
+        # it must never take the loopback exemption (which would let DNS
+        # resolve it to an arbitrary remote host with no MAC identity check).
+        self.assertFalse(capture_session._tcp_is_loopback("127.evil.example"))
+        self.assertFalse(capture_session._tcp_is_loopback("127.1.example.com"))
+        self.assertTrue(capture_session._tcp_is_loopback("localhost"))
+        self.assertTrue(capture_session._tcp_is_loopback("127.0.0.1"))
+        self.assertTrue(capture_session._tcp_is_loopback("127.1.2.3"))
+        self.assertTrue(capture_session._tcp_is_loopback("::1"))
+        # Full identity lane: with no expected MAC in .env the guard refuses
+        # BEFORE any subprocess (no ping, no ARP) and no socket is opened.
+        env_path = os.path.join(self.tmp, "empty.env")
+        with open(env_path, "w", encoding="utf-8"):
+            pass
+        calls = []
+        real_run = capture_session.subprocess.run
+
+        def forbidden_run(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("ping/arp must not run in this test")
+
+        capture_session.subprocess.run = forbidden_run
+        try:
+            with self.assertRaises(capture_session.TcpGuardError) as ctx:
+                capture_session.resolve_tcp_host("127.evil.example", env_path)
+            code, out, err = run_cli(
+                capture_session.main,
+                ["--tcp", "127.evil.example:1", "--env", env_path,
+                 "--no-audio", "--no-keys", "--quiet",
+                 "--out-dir", os.path.join(self.tmp, "tcp-evil")],
+            )
+        finally:
+            capture_session.subprocess.run = real_run
+        self.assertEqual(calls, [])
+        self.assertIn(cc.ENV_OTA_MAC_KEY, str(ctx.exception))
+        self.assertNotEqual(code, 0)
+        self.assertIn("refused", err)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "tcp-evil")))
+
     def test_tcp_aborts_without_greeting(self):
         # A service that talks, but not the greeting, first.
         server = TelemetryStubServer([{"bad_first_line": True}])

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import ipaddress
 import json
 import os
 import queue
@@ -1240,7 +1241,16 @@ class TcpGuardError(Exception):
 
 
 def _tcp_is_loopback(host: str) -> bool:
-    return host.lower() in ("localhost", "::1") or host.startswith("127.")
+    """True only for genuinely local targets: the literal name 'localhost' or
+    an ADDRESS literal that parses as loopback (127.0.0.0/8, ::1). A DNS name
+    is never exempt - '127.evil.example' is a resolvable hostname, not a
+    loopback address, and must take the full ping+ARP identity lane."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]").split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
 
 
 def parse_tcp_target(value: Optional[str], env: Dict[str, str]) -> Tuple[str, int]:
@@ -1323,6 +1333,17 @@ def tcp_connect_verified(host: str, port: int, env_path: str):
         sock = socket.create_connection((ip, port), timeout=5)
     except OSError as exc:
         raise TcpGuardError(f"connect failed ({type(exc).__name__})")
+    if _tcp_is_loopback(host):
+        # Belt and braces: the loopback lane skipped ping+ARP, so the actual
+        # peer must really be loopback or the exemption was not earned.
+        try:
+            peer = ipaddress.ip_address(sock.getpeername()[0].split("%", 1)[0])
+            peer_ok = peer.is_loopback
+        except (OSError, ValueError, IndexError):
+            peer_ok = False
+        if not peer_ok:
+            sock.close()
+            raise TcpGuardError("loopback target reached a non-loopback peer; refusing")
     try:
         sock.shutdown(socket.SHUT_WR)
     except OSError:
