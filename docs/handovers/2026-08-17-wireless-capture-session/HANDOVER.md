@@ -1,7 +1,7 @@
 ---
 slug: wireless-capture-session
 date: 2026-08-17
-status: open
+status: approved
 round: 0
 author_session: Colibrino/Oracle-Loop round-one session (validated both repos, corrected 14 doc contradictions, built the v2 core scaffold, capture tooling, and the wireless telemetry firmware; ~81% context used)
 ---
