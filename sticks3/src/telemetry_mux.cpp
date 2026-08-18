@@ -59,7 +59,17 @@ uint32_t last_dropped_report_ms = 0;
 WiFiServer telemetry_server(kTelemetryPort, 1);
 WiFiClient telemetry_client;
 bool server_started = false;
+uint32_t last_server_begin_ms = 0;
 bool mdns_service_added = false;
+// Attachment is tracked here, NEVER via WiFiClient::operator bool(): the
+// framework's connected() probes with a zero-length recv and latches
+// disconnected on the peer FIN (lwIP maps ERR_CLSD to ENOTCONN), which is
+// precisely the healthy half-close this stream expects. Only a send() error
+// clears this flag.
+bool client_attached = false;
+// Set when a drain stopped mid-line; an overflow drop in that state would
+// otherwise splice the next surviving line onto the transmitted head bytes.
+bool partial_line_sent = false;
 // The capture host half-closes its side (shutdown(SHUT_WR)) immediately
 // after connecting, so recv() returning 0 is the expected FIN of a healthy
 // read-only peer, never a disconnect. Only a send() error ends the client.
@@ -92,6 +102,19 @@ void ringDropOldest(size_t needed) {
   }
 }
 
+void ringAppend(const uint8_t* buffer, size_t size);
+
+// Restores line framing after an overflow that discarded the un-sent tail of
+// a partially transmitted line: without this the client would receive the
+// transmitted head bytes spliced onto the next surviving line.
+void resyncAfterPartial() {
+  if (partial_line_sent) {
+    const uint8_t newline = '\n';
+    partial_line_sent = false;
+    ringAppend(&newline, 1);
+  }
+}
+
 void ringAppend(const uint8_t* buffer, size_t size) {
   if (size > kRingCapacity) {
     // A single write larger than the ring cannot be mirrored coherently;
@@ -99,7 +122,11 @@ void ringAppend(const uint8_t* buffer, size_t size) {
     ++dropped_lines_total;
     return;
   }
+  const uint32_t drops_before = dropped_lines_total;
   ringDropOldest(size);
+  if (dropped_lines_total != drops_before) {
+    resyncAfterPartial();
+  }
   for (size_t i = 0; i < size; ++i) {
     ring_storage[(ring_head + ring_size + i) % kRingCapacity] = buffer[i];
   }
@@ -107,7 +134,14 @@ void ringAppend(const uint8_t* buffer, size_t size) {
 }
 
 bool clientAlive() {
-  return telemetry_client && telemetry_client.fd() >= 0;
+  return client_attached && telemetry_client.fd() >= 0;
+}
+
+void detachClient() {
+  client_attached = false;
+  client_rx_closed = false;
+  partial_line_sent = false;
+  telemetry_client.stop();  // reclaim the fd (peer may sit in CLOSE_WAIT)
 }
 
 // Sends ring bytes with a hard per-pass budget. MSG_DONTWAIT never blocks;
@@ -122,6 +156,9 @@ void drainToClient() {
     const ssize_t sent = send(telemetry_client.fd(),
                               &ring_storage[ring_head], chunk, MSG_DONTWAIT);
     if (sent > 0) {
+      partial_line_sent =
+          ring_storage[(ring_head + static_cast<size_t>(sent) - 1) %
+                       kRingCapacity] != '\n';
       ringPop(static_cast<size_t>(sent));
       budget -= static_cast<size_t>(sent);
       continue;
@@ -129,8 +166,7 @@ void drainToClient() {
     if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       return;  // socket buffer full; try again next pass
     }
-    telemetry_client.stop();
-    client_rx_closed = false;
+    detachClient();
     return;
   }
 }
@@ -156,10 +192,13 @@ void discardInbound() {
 }
 
 void greetClient() {
-  char line[96];
+  // Carries the cumulative-since-boot drop total so a new client can
+  // baseline: any later DROPPED event above this number is loss it saw.
+  char line[112];
   const int length = snprintf(line, sizeof line,
-                              "EVENT,TELEMETRY,CONNECTED,%s\n",
-                              COLIBRINO_BUILD_ID);
+                              "EVENT,TELEMETRY,CONNECTED,%s,dropped=%lu\n",
+                              COLIBRINO_BUILD_ID,
+                              static_cast<unsigned long>(dropped_lines_total));
   if (length > 0 && clientAlive()) {
     // Best-effort single segment; a fresh socket buffer always has room.
     send(telemetry_client.fd(), line, static_cast<size_t>(length),
@@ -226,9 +265,23 @@ size_t TelemetryMux::printf(const char* format, ...) {
 void TelemetryMux::service(uint32_t now_ms) {
 #if COLIBRINO_TELEMETRY_CONFIGURED
   if (WiFi.status() != WL_CONNECTED) {
+    // Without the association there is nobody to drain to; detaching also
+    // stops the mirror from churning the ring and inflating the drop counter
+    // against a peer that cannot be reached (SO_KEEPALIVE would otherwise
+    // take hours to notice).
+    if (client_attached) {
+      detachClient();
+    }
     return;
   }
   if (!server_started) {
+    // Rate-limited: WiFiServer::begin leaks its socket on a transient bind
+    // or listen failure, and an every-pass retry could exhaust the lwIP
+    // socket table and take authenticated OTA (the recovery lane) with it.
+    if (now_ms - last_server_begin_ms < 1000) {
+      return;
+    }
+    last_server_begin_ms = now_ms;
     telemetry_server.begin(kTelemetryPort, 1);
     server_started = static_cast<bool>(telemetry_server);
     if (!server_started) {
@@ -249,11 +302,14 @@ void TelemetryMux::service(uint32_t now_ms) {
   if (incoming) {
     // Assignment stops any previous client: a reconnecting host replaces a
     // stale connection without a device reboot.
-    telemetry_client = incoming;
+    telemetry_client = incoming;  // assignment stops any previous client
     telemetry_client.setNoDelay(true);
+    client_attached = true;
     client_rx_closed = false;
-    // Each client starts from a clean stream: no stale backlog, and DROPPED
-    // totals from a previous connection stay attributable to it.
+    partial_line_sent = false;
+    // Each client starts from a clean stream (no stale backlog). The DROPPED
+    // counter is cumulative since boot; the greeting's dropped= field is the
+    // client's baseline.
     ring_head = 0;
     ring_size = 0;
     greetClient();
