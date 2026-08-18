@@ -18,7 +18,8 @@
       "name": "Oracle Loop",
       "local_path": "/Users/fcavalcanti/dev/oracle-loop",
       "remote": "https://github.com/fcavalcantirj/oracle-loop",
-      "main_commit": "3cf1c30",
+      "main_commit": "325c3ea",
+      "main_note": "Felipe granted the exact phrase merge allowed on 2026-08-17; the engine branch through 3c67984 (including the ratified v2 oracle map b932e38 and the v2 SPEC) was fast-forward merged to main by his merge tool. The Luos qualification (84b5bea) and round-one corrections branches remain stacked above main, unmerged.",
       "engine_stack_branch": "dasbrow/build-the-transform-prompt-parse-core-fo-20260817-005512",
       "engine_stack_commit": "3c67984",
       "engine_stack_note": "The engine branch tip 3c67984 is itself the v2 SPEC commit and the ratified v2 oracle map b932e38 is on the same branch; the last engine code commit is 6377bd9.",
@@ -26,8 +27,9 @@
       "luos_qualification_commit": "84b5bea",
       "round_one_corrections_branch": "agent/colibrino-v2-round-one-corrections",
       "round_one_corrections_commit": "c7a82ac06ebfd72016082321588daa97d30c2c1b",
+      "round_one_corrections_tip": "b5e65b8",
       "round_one_corrections_note": "Stacked on 84b5bea; restores the owner-ratified three-rule safety list, records the canonical round-one unit set as PROPOSED, the capture-path decision, the v2/ paths and presets, and untracks .coverage. A later Oracle state-handoff commit may advance this branch; Colibrino records only this commit and does not chase it.",
-      "stack_order": ["3cf1c30", "3c67984", "84b5bea", "c7a82ac"],
+      "stack_order": ["325c3ea(main, includes 3c67984)", "84b5bea", "c7a82ac", "b5e65b8"],
       "authority": "Executable oracle map, specification, and assisted branch-only implementation workflow. Its stacked engine and Colibrino documentation must not be merged, rebased, squashed, or rewritten without the repository's exact user merge grant."
     }
   ],
