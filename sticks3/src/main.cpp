@@ -22,6 +22,7 @@
 #include "colibrino/imu_blink_detector.h"
 #include "colibrino/motion_controller.h"
 #include "colibrino/signal_analysis.h"
+#include "telemetry_mux.h"
 #include "ir_probe.h"
 
 #if ARDUINO_USB_MODE != 0
@@ -56,13 +57,20 @@ enum class ImuProbeStage : uint8_t {
   kCaptureBlinks,
   kPrepareHeadMotion,
   kCaptureHeadMotion,
+  // Optional cable-free capture block: streams IMU rows without the guided
+  // timing so 30-second rest baselines and long confounders fit one block.
+  // It never contributes to the validation predicate.
+  kCaptureFreeRun,
   kResult,
 };
 
 // Long-lived device services. USB interfaces are registered before USB.begin()
 // so CDC diagnostics and HID mouse enumerate as one native TinyUSB composite.
 USBHIDMouse mouse;
-USBCDC diagnostics;
+USBCDC usb_cdc;
+// All diagnostics go through the mux: byte-identical USB CDC output plus an
+// optional read-only TCP mirror for cable-free capture (telemetry_mux.h).
+TelemetryMux diagnostics(usb_cdc);
 StickS3IrProbe ir_probe;
 BlinkFeasibilityProtocol feasibility;
 MotionController motion(MotionConfig{
@@ -100,6 +108,7 @@ uint32_t imu_probe_samples = 0;
 uint32_t imu_still_sequences = 0;
 uint32_t imu_blink_sequences = 0;
 uint32_t imu_head_sequences = 0;
+uint32_t imu_free_sequences = 0;
 Vec3 gyro_dps{};
 Vec3 gyro_bias{};
 Vec3 accel_g{};
@@ -112,7 +121,13 @@ constexpr uint32_t kImuPrepareMs = 3000;
 constexpr uint32_t kImuStillCaptureMs = 6000;
 constexpr uint32_t kImuBlinkCaptureMs = 15000;
 constexpr uint32_t kImuHeadCaptureMs = 12000;
+// Free-run capture is bounded so a forgotten session cannot stream forever.
+constexpr uint32_t kImuFreeRunCaptureMs = 90000;
 constexpr uint32_t kBlueHoldMs = 2000;
+
+#ifndef COLIBRINO_BUILD_ID
+#define COLIBRINO_BUILD_ID "unknown"
+#endif
 
 #if COLIBRINO_OTA_CONFIGURED
 constexpr char kOtaHostname[] = "sticks3-ptt";
@@ -151,6 +166,8 @@ const char* imuProbeStageName(ImuProbeStage value) {
       return "PREPARE_HEAD";
     case ImuProbeStage::kCaptureHeadMotion:
       return "MOVE_HEAD";
+    case ImuProbeStage::kCaptureFreeRun:
+      return "CAPTURE_FREE_RUN";
     case ImuProbeStage::kResult:
       return "CAPTURE_COMPLETE";
   }
@@ -160,7 +177,8 @@ const char* imuProbeStageName(ImuProbeStage value) {
 bool imuProbeCapturing() {
   return imu_probe_stage == ImuProbeStage::kCaptureStill ||
          imu_probe_stage == ImuProbeStage::kCaptureBlinks ||
-         imu_probe_stage == ImuProbeStage::kCaptureHeadMotion;
+         imu_probe_stage == ImuProbeStage::kCaptureHeadMotion ||
+         imu_probe_stage == ImuProbeStage::kCaptureFreeRun;
 }
 
 bool imuProbeActive() {
@@ -189,6 +207,7 @@ void startImuProbe(uint32_t now_ms) {
   imu_still_sequences = 0;
   imu_blink_sequences = 0;
   imu_head_sequences = 0;
+  imu_free_sequences = 0;
   // Repeating the test invalidates the previous result until every safety
   // phase passes again. Runtime state must never span a mount change.
   imu_blink_validated = false;
@@ -197,6 +216,23 @@ void startImuProbe(uint32_t now_ms) {
       "CSV: IMU,ms,usec,stage,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g");
   diagnostics.println("EVENT,IMU_PROBE_STARTED");
   advanceImuProbe(ImuProbeStage::kPrepareStill, now_ms);
+}
+
+// Ends a free-run capture block. Free-run never touches the validation gate:
+// imu_blink_validated stays exactly as startImuProbe left it (false), and the
+// RESULT line always reports NOT_PROVEN with the free-run sequence count as a
+// trailing field that older tools tolerate and ignore.
+void endFreeRunCapture(uint32_t now_ms) {
+  runtime_imu_blink_detector.reset();
+  advanceImuProbe(ImuProbeStage::kResult, now_ms);
+  diagnostics.printf("EVENT,IMU_PROBE_COMPLETE,samples=%lu\n",
+                     static_cast<unsigned long>(imu_probe_samples));
+  diagnostics.printf(
+      "RESULT,IMU_BLINK,NOT_PROVEN,still=%lu,blink=%lu,head=%lu,free=%lu\n",
+      static_cast<unsigned long>(imu_still_sequences),
+      static_cast<unsigned long>(imu_blink_sequences),
+      static_cast<unsigned long>(imu_head_sequences),
+      static_cast<unsigned long>(imu_free_sequences));
 }
 
 void updateImuProbeClock(uint32_t now_ms) {
@@ -242,6 +278,11 @@ void updateImuProbeClock(uint32_t now_ms) {
             static_cast<unsigned long>(imu_still_sequences),
             static_cast<unsigned long>(imu_blink_sequences),
             static_cast<unsigned long>(imu_head_sequences));
+      }
+      break;
+    case ImuProbeStage::kCaptureFreeRun:
+      if (elapsed >= kImuFreeRunCaptureMs) {
+        endFreeRunCapture(now_ms);
       }
       break;
     default:
@@ -330,6 +371,12 @@ void drawMotionScreen(uint32_t now_ms) {
       M5.Display.println("blink twice; then repeat");
     } else if (imu_probe_stage == ImuProbeStage::kCaptureHeadMotion) {
       M5.Display.println("look left/right/up/down");
+    } else if (imu_probe_stage == ImuProbeStage::kCaptureFreeRun) {
+      M5.Display.println("FREE RUN capture");
+      M5.Display.println("tap BLUE: stop");
+    } else if (imu_probe_stage == ImuProbeStage::kPrepareStill) {
+      M5.Display.println("get ready for next stage");
+      M5.Display.println("tap BLUE: free run");
     } else {
       M5.Display.println("get ready for next stage");
     }
@@ -614,6 +661,8 @@ void updateImu(uint32_t now_ms) {
           stage_sequences = &imu_blink_sequences;
         } else if (imu_probe_stage == ImuProbeStage::kCaptureHeadMotion) {
           stage_sequences = &imu_head_sequences;
+        } else if (imu_probe_stage == ImuProbeStage::kCaptureFreeRun) {
+          stage_sequences = &imu_free_sequences;
         }
         if (stage_sequences != nullptr) {
           ++*stage_sequences;
@@ -678,14 +727,17 @@ void logStatus(uint32_t now_ms) {
   }
   last_status_log_ms = now_ms;
   diagnostics.printf(
-      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f\n",
+      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f,build=%s,batt=%ld,tele=%u\n",
       static_cast<unsigned long>(now_ms),
       M5.getBoard() == m5::board_t::board_M5StickS3 ? "StickS3" : "UNKNOWN",
       modeName(mode), mouse_armed, M5.Imu.isEnabled(), motion_calibrated,
       imu_blink_validated, ir_powered, otaStateName(),
       colibrino::feasibilityStageName(feasibility.stage()),
       imuProbeStageName(imu_probe_stage),
-      gyro_dps.x, gyro_dps.y, gyro_dps.z);
+      gyro_dps.x, gyro_dps.y, gyro_dps.z,
+      COLIBRINO_BUILD_ID,
+      static_cast<long>(M5.Power.getBatteryLevel()),
+      diagnostics.clientConnected() ? 1u : 0u);
 }
 
 void handleButtons(uint32_t now_ms) {
@@ -735,6 +787,16 @@ void handleButtons(uint32_t now_ms) {
         (imu_probe_stage == ImuProbeStage::kIdle ||
          imu_probe_stage == ImuProbeStage::kResult)) {
       startImuProbe(now_ms);
+    } else if (blue_clicked && !motion_hold_latched &&
+               imu_probe_stage == ImuProbeStage::kPrepareStill) {
+      // Second tap during the preparation screen converts the guided start
+      // into a free-run capture. No second STARTED line is emitted: the
+      // EVENT,IMU_PROBE_STAGE,CAPTURE_FREE_RUN transition is the marker, so
+      // older tools keep seeing exactly one session.
+      advanceImuProbe(ImuProbeStage::kCaptureFreeRun, now_ms);
+    } else if (blue_clicked && !motion_hold_latched &&
+               imu_probe_stage == ImuProbeStage::kCaptureFreeRun) {
+      endFreeRunCapture(now_ms);
     }
     return;
   }
@@ -796,6 +858,7 @@ void setup() {
   calibration_started_ms = millis();
   gyro_calibrator.reset();
   diagnostics.println("Colibrino StickS3 prototype");
+  diagnostics.printf("EVENT,BUILD,%s\n", COLIBRINO_BUILD_ID);
   diagnostics.println(
       "CSV: IR,ms,valid,symbols,active_us,total_us,ratio,stage");
   diagnostics.printf("IMU type: %d (BMI270 expected: %d)\n",
@@ -817,6 +880,9 @@ void loop() {
     return;
   }
 #endif
+  // After the OTA early-return on purpose: ArduinoOTA.handle() runs a whole
+  // transfer synchronously, so no telemetry work can or should run mid-flash.
+  diagnostics.service(now_ms);
   handleButtons(now_ms);
   updateImu(now_ms);
   updateIr(now_ms);
