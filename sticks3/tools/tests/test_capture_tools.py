@@ -20,8 +20,10 @@ import math
 import os
 import random
 import shutil
+import socket
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -43,7 +45,7 @@ RETAINED_LOGS = {
 EXPECTED_SESSIONS = {"260814-232730": 1, "260815-151549": 5, "260814-234754": 1}
 PLAN_PATH = os.path.join(TOOLS_DIR, "capture_plans", "round1.json")
 
-STAGE_MS = {"KEEP_HEAD_STILL": 6000, "BLINK_FIRMLY": 15000, "MOVE_HEAD": 12000}
+STAGE_MS = {"KEEP_HEAD_STILL": 6000, "BLINK_FIRMLY": 15000, "MOVE_HEAD": 12000, "CAPTURE_FREE_RUN": 10000}
 PREPARE_MS = 3000
 IMPULSE_MS = 60
 BASE = (0.3, -0.2, 0.1)
@@ -59,11 +61,15 @@ def coded_pattern(start_ms: int):
     return [start_ms, start_ms + 500, start_ms + 1600, start_ms + 2100]
 
 
-def _status(ms: int, imu_stage: str = "IDLE", mode: str = "MOTION") -> str:
-    return (
+def _status(ms: int, imu_stage: str = "IDLE", mode: str = "MOTION", build: str = None, batt: int = 87, tele: int = 1) -> str:
+    line = (
         f"STATUS,{ms},board=StickS3,mode={mode},armed=0,imu=1,calibrated=1,imu_blink=0,ir=0,ota=READY,"
         f"ir_stage=IDLE,imu_stage={imu_stage},gyro_x=0.061,gyro_y=-0.061,gyro_z=0.000"
     )
+    if build is not None:
+        # Wireless-telemetry firmware appends ,build=<sha>,batt=<pct>,tele=<0|1>.
+        line += f",build={build},batt={batt},tele={tele}"
+    return line
 
 
 def _gyro(t_rel: int, kind: str, impulses):
@@ -161,6 +167,101 @@ def build_synthetic_log(path: str, with_v2: bool = False):
     return path
 
 
+def emit_free_run_session(lines, ms: int, free_count: int = 2) -> int:
+    """One free-run session, byte-shaped like the firmware emits it: STARTED,
+    PREPARE_STILL, then the second Button-A tap converts the guided start into
+    CAPTURE_FREE_RUN (no second STARTED line - the stage transition is the
+    marker), rows stream with that stage, and the RESULT is always NOT_PROVEN
+    with the trailing ,free=<n> field."""
+    lines.append("CSV: IMU,ms,usec,stage,gx_dps,gy_dps,gz_dps,ax_g,ay_g,az_g")
+    lines.append("EVENT,IMU_PROBE_STARTED")
+    lines.append("EVENT,IMU_PROBE_STAGE,PREPARE_STILL")
+    for k in range(2):
+        lines.append(_status(ms + 1000 * k, "PREPARE_STILL", build="e1b1c48"))
+    ms += 1500  # second tap lands mid-preparation
+    lines.append("EVENT,IMU_PROBE_STAGE,CAPTURE_FREE_RUN")
+    before = len(lines)
+    impulses = coded_pattern(2000) + coded_pattern(6500)  # what the wearer did
+    ms = _rows(lines, ms, "CAPTURE_FREE_RUN", "quiet", impulses)
+    samples = len(lines) - before
+    lines.append("EVENT,IMU_PROBE_STAGE,CAPTURE_COMPLETE")
+    lines.append(f"EVENT,IMU_PROBE_COMPLETE,samples={samples}")
+    lines.append(f"RESULT,IMU_BLINK,NOT_PROVEN,still=0,blink=0,head=0,free={free_count}")
+    for k in range(5):
+        lines.append(_status(ms + 1000 * k, "CAPTURE_COMPLETE", build="e1b1c48"))
+    return ms + 5000
+
+
+def build_free_run_log(path: str, leading_quiet_session: bool = False):
+    """Boot STATUS block (with the new build/batt/tele tail) followed by an
+    optional quiet guided session (so a plan's R0 slot is consumed) and one
+    free-run session."""
+    lines = []
+    for k in range(65):
+        lines.append(_status(1030 + 1000 * k, "IDLE", "IR PROBE", build="e1b1c48"))
+    ms = 70_000
+    if leading_quiet_session:
+        quiet = ("quiet", [])
+        ms = emit_session(lines, ms, {"KEEP_HEAD_STILL": quiet, "BLINK_FIRMLY": quiet, "MOVE_HEAD": ("sweep", []), "expected": (0, 0, 0)})
+    ms = emit_free_run_session(lines, ms)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return path
+
+
+class TelemetryStubServer(threading.Thread):
+    """[TEST] Loopback stand-in for the firmware telemetry mirror.
+
+    Each entry of `scripts` describes one accepted connection:
+      greeting  (default True)  send EVENT,TELEMETRY,CONNECTED,<build> first
+      bad_first_line            send a STATUS line instead of the greeting
+      chunks                    byte strings sent after the greeting
+    Before sending anything the server reads until EOF, recording every recv
+    result: a client that honoured SHUT_WR yields exactly [b""] per
+    connection, proving zero bytes were ever sent after connect.
+    """
+
+    def __init__(self, scripts):
+        super().__init__(daemon=True)
+        self.scripts = scripts
+        self.received = []  # one list of recv() results per connection
+        self.errors = []
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.port = self.listener.getsockname()[1]
+
+    def run(self):
+        try:
+            for script in self.scripts:
+                conn, _ = self.listener.accept()
+                conn.settimeout(5)
+                got = []
+                try:
+                    while True:
+                        data = conn.recv(1024)
+                        got.append(data)
+                        if not data:
+                            break
+                except socket.timeout:
+                    got.append(b"<recv timeout>")
+                self.received.append(got)
+                try:
+                    if script.get("bad_first_line"):
+                        conn.sendall(b"STATUS,1,board=StickS3,mode=MOTION\n")
+                    elif script.get("greeting", True):
+                        conn.sendall(b"EVENT,TELEMETRY,CONNECTED,e1b1c48\n")
+                    for chunk in script.get("chunks", []):
+                        conn.sendall(chunk)
+                finally:
+                    conn.close()
+        except Exception as exc:  # pragma: no cover - surfaced via self.errors
+            self.errors.append(repr(exc))
+        finally:
+            self.listener.close()
+
+
 def as_live_capture(sim_dir: str, dest_root: str, stamp: str = "20260901T000000") -> str:
     """[TEST] Reshape a --simulate output into a live-shaped capture directory.
 
@@ -213,10 +314,31 @@ class CaptureToolsBase(unittest.TestCase):
         # capture_date (the rehearsal day never is).
         cls.synthetic_log = build_synthetic_log(os.path.join(cls.tmp, "synthetic-device-monitor-260901-000000.log"))
         cls.synthetic_log_v2 = build_synthetic_log(os.path.join(cls.tmp, "synthetic-device-monitor-260902-000000-v2.log"), with_v2=True)
+        cls.free_run_log = build_free_run_log(os.path.join(cls.tmp, "synthetic-device-monitor-260903-000000-freerun.log"))
+        cls.free_run_plan_log = build_free_run_log(
+            os.path.join(cls.tmp, "synthetic-device-monitor-260904-000000-freerun-plan.log"),
+            leading_quiet_session=True,
+        )
 
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _simulate(self, log_path: str, plan: bool, name: str, plan_session: str = "A") -> str:
+        out_root = os.path.join(self.tmp, name)
+        argv = ["--simulate", log_path, "--no-audio", "--no-keys", "--quiet", "--sim-speed", "0", "--out-dir", out_root]
+        if plan:
+            argv += ["--plan", PLAN_PATH, "--plan-session", plan_session]
+        code, out, err = run_cli(capture_session.main, argv)
+        self.assertEqual(code, 0, err + out)
+        dirs = [d for d in os.listdir(out_root) if d.startswith("capture-sim-")]
+        self.assertEqual(len(dirs), 1)
+        return os.path.join(out_root, dirs[0])
+
+    def _live(self, log_path: str, name: str, plan_session: str = "A", stamp: str = "20260901T000000") -> str:
+        """Simulate, then reshape into a live-shaped capture directory."""
+        sim_dir = self._simulate(log_path, plan=True, name=name + "-sim", plan_session=plan_session)
+        return as_live_capture(sim_dir, os.path.join(self.tmp, name), stamp)
 
 
 class TestParsingAndSplitting(CaptureToolsBase):
@@ -387,22 +509,6 @@ class TestSerialGuard(unittest.TestCase):
 
 
 class TestSimulateAndFixtures(CaptureToolsBase):
-    def _simulate(self, log_path: str, plan: bool, name: str, plan_session: str = "A") -> str:
-        out_root = os.path.join(self.tmp, name)
-        argv = ["--simulate", log_path, "--no-audio", "--no-keys", "--quiet", "--sim-speed", "0", "--out-dir", out_root]
-        if plan:
-            argv += ["--plan", PLAN_PATH, "--plan-session", plan_session]
-        code, out, err = run_cli(capture_session.main, argv)
-        self.assertEqual(code, 0, err + out)
-        dirs = [d for d in os.listdir(out_root) if d.startswith("capture-sim-")]
-        self.assertEqual(len(dirs), 1)
-        return os.path.join(out_root, dirs[0])
-
-    def _live(self, log_path: str, name: str, plan_session: str = "A", stamp: str = "20260901T000000") -> str:
-        """Simulate, then reshape into a live-shaped capture directory."""
-        sim_dir = self._simulate(log_path, plan=True, name=name + "-sim", plan_session=plan_session)
-        return as_live_capture(sim_dir, os.path.join(self.tmp, name), stamp)
-
     def test_simulate_writes_capture_directory_and_runs(self):
         capture_dir = self._simulate(self.synthetic_log, plan=True, name="sim-plan")
         for fname in ("raw.log", "hosttime.tsv", "markers.jsonl", "session.json"):
@@ -771,6 +877,226 @@ class TestRetainedLogFixtures(CaptureToolsBase):
                 self.assertIn("parity_unavailable=1", summary)  # that log has no RESULT line
             else:
                 self.assertIn("parity_mismatches=1", summary)  # older detector build
+
+
+class TestStatusAndTelemetryCompat(CaptureToolsBase):
+    def test_status_new_fields_and_result_free_suffix(self):
+        # New STATUS tail: ,build=<sha>,batt=<pct>,tele=<0|1> (batt may be -1).
+        parsed = cc.parse_status(_status(5000, build="e1b1c48", batt=-1, tele=1))
+        assert parsed is not None
+        self.assertEqual(parsed[0], 5000)
+        self.assertEqual(parsed[1]["build"], "e1b1c48")
+        self.assertEqual(parsed[1]["batt"], "-1")
+        self.assertEqual(parsed[1]["tele"], "1")
+        self.assertEqual(parsed[1]["ota"], "READY")
+        # Old STATUS lines keep parsing exactly as before, without the keys.
+        old = cc.parse_status(_status(5000))
+        assert old is not None
+        self.assertNotIn("build", old[1])
+        self.assertNotIn("batt", old[1])
+        self.assertNotIn("tele", old[1])
+        self.assertEqual(old[1]["imu_stage"], "IDLE")
+        # RESULT free suffix is exposed only when present.
+        self.assertEqual(
+            cc.parse_result("RESULT,IMU_BLINK,NOT_PROVEN,still=0,blink=0,head=0,free=2"),
+            {"verdict": "NOT_PROVEN", "still": 0, "blink": 0, "head": 0, "free": 2},
+        )
+        self.assertEqual(
+            cc.parse_result("RESULT,IMU_BLINK,PASS,still=0,blink=2,head=0"),
+            {"verdict": "PASS", "still": 0, "blink": 2, "head": 0},
+        )
+
+    def test_telemetry_dropped_event_increments_alarm_counter(self):
+        log = os.path.join(self.tmp, "telemetry-events.log")
+        lines = [_status(1000 + 1000 * k, build="e1b1c48") for k in range(3)]
+        lines.append("EVENT,TELEMETRY,CONNECTED,e1b1c48")
+        lines.append("EVENT,TELEMETRY,DROPPED,3")
+        lines.append(_status(5000, build="e1b1c48"))
+        lines.append("EVENT,TELEMETRY,DROPPED,3")  # unchanged total: no new alarm
+        lines.append("EVENT,TELEMETRY,DROPPED,7")  # increase: second alarm
+        with open(log, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n".join(lines) + "\n")
+        capture_dir = self._simulate(log, plan=False, name="sim-telemetry")
+        with open(os.path.join(capture_dir, "session.json"), "r", encoding="utf-8") as handle:
+            session = json.load(handle)
+        dropped = [a for a in session["alarms"] if a["key"] == "telemetry_dropped"]
+        self.assertEqual(len(dropped), 2, session["alarms"])
+        self.assertEqual(session["telemetry"], {"greetings": 1, "connected_build": "e1b1c48", "dropped_total": 7})
+        self.assertEqual(session["status_build"], "e1b1c48")
+
+
+class TestFreeRunTooling(CaptureToolsBase):
+    def test_free_run_log_is_one_session_with_free_block(self):
+        sessions = cc.split_sessions(cc.read_lines(self.free_run_log))
+        self.assertEqual(len(sessions), 1)
+        session = sessions[0]
+        self.assertTrue(session.explicit_start)
+        self.assertIn(cc.FREE_RUN_STAGE, session.stages)
+        block = session.stages[cc.FREE_RUN_STAGE]
+        self.assertGreater(len(block.rows), 500)
+        self.assertIsNotNone(block.event_line)
+        for stage in cc.CAPTURE_STAGES:
+            guided = session.stages.get(stage)
+            self.assertTrue(guided is None or not guided.rows, stage)
+        assert session.result is not None
+        self.assertEqual(session.result["verdict"], "NOT_PROVEN")
+        self.assertEqual(session.result["free"], 2)
+
+    def test_free_run_fixture_review_required_and_replay_parity(self):
+        # The compiled replay tool skips the unknown stage: one session,
+        # clean controls, NOT_PROVEN.
+        replay = cc.run_replay(self.replay_bin, self.free_run_log)
+        self.assertEqual(replay["summary"]["sessions"], 1)  # type: ignore[index]
+        self.assertTrue(replay["summary"]["controls_clean"])  # type: ignore[index]
+        self.assertEqual(replay["sessions"][0]["result"], "NOT_PROVEN")  # type: ignore[index]
+        out = os.path.join(self.tmp, "fixtures-freerun")
+        code, stdout, stderr = run_cli(mtf.main, [self.free_run_log, "--out", out, "--replay-bin", self.replay_bin])
+        self.assertEqual(code, 0, stderr + stdout)
+        name = "20260903-s1-capture_free_run-v_standard"
+        self.assertEqual(sorted(os.listdir(out)), [name + ".csv", name + ".labels.json", name + ".labels.tsv"])
+        with open(os.path.join(out, name + ".labels.json"), "r", encoding="utf-8") as handle:
+            labels = json.load(handle)
+        self.assertEqual(labels["capture"]["stage"], "CAPTURE_FREE_RUN")
+        self.assertEqual(labels["capture"]["run_kind"], "V_standard")  # CLI default; plans map it per run
+        self.assertTrue(labels["review_required"])
+        self.assertTrue(
+            any("labels.schema.json" in reason and "CAPTURE_FREE_RUN" in reason for reason in labels["review_reasons"]),
+            labels["review_reasons"],
+        )
+        # Unguided stage: nothing can be asserted automatically.
+        self.assertEqual(labels["segments"], [])
+        # STATUS build= is the default firmware_commit provenance.
+        self.assertEqual(labels["capture"]["firmware_commit"], "e1b1c48")
+        with open(os.path.join(out, name + ".labels.tsv"), "r", encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), mtf.TSV_HEADER + "\n")
+        self.assertIn("REVIEW REQUIRED", stdout)
+        # Promotion stays blocked while review_required is true.
+        code, stdout, stderr = run_cli(mtf.main, ["--promote", name, "--out", out, "--dest", os.path.join(self.tmp, "promoted-freerun")])
+        self.assertNotEqual(code, 0)
+        self.assertIn("review_required is true", stderr)
+
+    def test_accept_runs_rejects_free_run_only_session(self):
+        # Plan A maps session 1 -> R0 and session 2 -> V1; session 2 here is
+        # free-run-only, so designating V1 must never yield ACCEPT.
+        live = self._live(self.free_run_plan_log, name="live-accept-freerun", stamp="20260904T000000")
+        code, stdout, stderr = run_cli(mtf.main, ["--accept-runs", "V1,V2", "--session", live, "--replay-bin", self.replay_bin])
+        self.assertNotEqual(code, 0)
+        self.assertRegex(stdout, r"V1\t.*\tFREE_RUN")
+        self.assertIn("verdict=REJECT", stdout)
+        self.assertNotIn("verdict=ACCEPT", stdout)
+
+
+class TestTcpTransport(CaptureToolsBase):
+    """[TEST] Loopback-only TCP adapter checks; no real device or network."""
+
+    def _tcp_capture(self, name, server, extra_argv=(), give_up="1.5"):
+        out_root = os.path.join(self.tmp, name)
+        argv = [
+            "--tcp", f"127.0.0.1:{server.port}", "--tcp-give-up", give_up,
+            "--no-audio", "--no-keys", "--quiet", "--out-dir", out_root,
+        ] + list(extra_argv)
+        code, out, err = run_cli(capture_session.main, argv)
+        return code, out, err, out_root
+
+    @staticmethod
+    def _capture_dir(out_root):
+        dirs = [d for d in os.listdir(out_root) if d.startswith("capture-")]
+        assert len(dirs) == 1, dirs
+        return os.path.join(out_root, dirs[0])
+
+    @staticmethod
+    def _session(capture_dir):
+        with open(os.path.join(capture_dir, "session.json"), "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    @staticmethod
+    def _run_structure(session):
+        """Run/session structure only - no host timestamps."""
+        return [
+            (
+                run["run_id"],
+                run["run_kind"],
+                run["status"],
+                [(a.get("session_index"), a.get("result")) for a in run["attempts"]],
+            )
+            for run in session["runs"]
+        ]
+
+    def test_tcp_greeting_stream_parses_like_simulate_and_sends_nothing(self):
+        sim = self._session(self._simulate(self.synthetic_log, plan=True, name="tcp-ref-sim"))
+        with open(self.synthetic_log, "rb") as handle:
+            log_bytes = handle.read()
+        server = TelemetryStubServer([{"chunks": [log_bytes]}])
+        server.start()
+        code, out, err, out_root = self._tcp_capture("tcp-stream", server, extra_argv=["--plan", PLAN_PATH])
+        server.join(timeout=10)
+        self.assertEqual(code, 0, err + out)
+        self.assertEqual(server.errors, [])
+        # SHUT_WR proof: the server's recv saw only EOF, never a byte.
+        self.assertEqual(server.received, [[b""]])
+        tcp_dir = self._capture_dir(out_root)
+        tcp = self._session(tcp_dir)
+        self.assertEqual(tcp["mode"], "tcp")
+        self.assertEqual(
+            tcp["identity"],
+            {"transport": "tcp", "mac_last4": None, "port": server.port, "host_is_loopback": True},
+        )
+        self.assertEqual(tcp["telemetry"]["greetings"], 1)
+        self.assertEqual(tcp["telemetry"]["connected_build"], "e1b1c48")
+        # Identical parsing to --simulate of the same log (structure, not
+        # host timestamps; the tcp stream additionally carries the greeting).
+        self.assertEqual(tcp["probe_sessions"], sim["probe_sessions"])
+        self.assertEqual(tcp["status_count"], sim["status_count"])
+        self.assertEqual(tcp["boot"]["boot_ok"], sim["boot"]["boot_ok"])
+        self.assertEqual(self._run_structure(tcp), self._run_structure(sim))
+        with open(os.path.join(tcp_dir, "raw.log"), "rb") as handle:
+            self.assertEqual(handle.read(), b"EVENT,TELEMETRY,CONNECTED,e1b1c48\n" + log_bytes)
+
+    def test_tcp_mid_stream_close_reconnects_and_continues(self):
+        sim = self._session(self._simulate(self.synthetic_log, plan=True, name="tcp-ref-sim-b"))
+        with open(self.synthetic_log, "rb") as handle:
+            log_bytes = handle.read()
+        mid = log_bytes.index(b"\n", len(log_bytes) // 2) + 1
+        server = TelemetryStubServer([{"chunks": [log_bytes[:mid]]}, {"chunks": [log_bytes[mid:]]}])
+        server.start()
+        code, out, err, out_root = self._tcp_capture("tcp-reconnect", server, extra_argv=["--plan", PLAN_PATH], give_up="2.0")
+        server.join(timeout=15)
+        self.assertEqual(code, 0, err + out)
+        self.assertEqual(server.errors, [])
+        self.assertEqual(server.received, [[b""], [b""]])  # nothing sent on either connection
+        tcp_dir = self._capture_dir(out_root)
+        tcp = self._session(tcp_dir)
+        self.assertEqual(tcp["disconnects"], 2)  # mid-stream close + final close
+        self.assertEqual(tcp["telemetry"]["greetings"], 2)
+        with open(os.path.join(tcp_dir, "markers.jsonl"), "r", encoding="utf-8") as handle:
+            marker_types = [json.loads(l)["type"] for l in handle if l.strip()]
+        self.assertIn("disconnect", marker_types)
+        self.assertIn("reconnect", marker_types)
+        # The capture continued across the reconnect: same parsed structure.
+        self.assertEqual(tcp["probe_sessions"], sim["probe_sessions"])
+        self.assertEqual(self._run_structure(tcp), self._run_structure(sim))
+        greeting = b"EVENT,TELEMETRY,CONNECTED,e1b1c48\n"
+        with open(os.path.join(tcp_dir, "raw.log"), "rb") as handle:
+            self.assertEqual(handle.read(), greeting + log_bytes[:mid] + greeting + log_bytes[mid:])
+
+    def test_tcp_aborts_without_greeting(self):
+        # A service that talks, but not the greeting, first.
+        server = TelemetryStubServer([{"bad_first_line": True}])
+        server.start()
+        code, out, err, out_root = self._tcp_capture("tcp-no-greeting", server)
+        server.join(timeout=10)
+        self.assertNotEqual(code, 0)
+        self.assertIn("greeting", err)
+        self.assertFalse(os.path.exists(out_root), "no capture directory may be created without the greeting")
+        self.assertEqual(server.received, [[b""]])
+        # A service that closes without saying anything.
+        server = TelemetryStubServer([{"greeting": False}])
+        server.start()
+        code, out, err, out_root = self._tcp_capture("tcp-silent", server)
+        server.join(timeout=10)
+        self.assertNotEqual(code, 0)
+        self.assertIn("greeting", err)
+        self.assertFalse(os.path.exists(out_root))
 
 
 if __name__ == "__main__":

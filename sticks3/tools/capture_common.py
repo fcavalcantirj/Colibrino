@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 CAPTURE_STAGES = ("KEEP_HEAD_STILL", "BLINK_FIRMLY", "MOVE_HEAD")
+# Unguided capture stage entered by a second Button-A tap during
+# PREPARE_STILL. Deliberately NOT part of CAPTURE_STAGES: guided-session
+# logic and replay parity iterate CAPTURE_STAGES only, and the host replay
+# tool skips this stage's rows entirely.
+FREE_RUN_STAGE = "CAPTURE_FREE_RUN"
 PREPARE_FOR_STAGE = {
     "PREPARE_STILL": "KEEP_HEAD_STILL",
     "PREPARE_BLINKS": "BLINK_FIRMLY",
@@ -57,6 +62,8 @@ COMMIT_CLASSES = ("public", "private")
 USB_MANUFACTURER = "Colibrino"
 USB_PRODUCT = "Colibrino StickS3 Prototype"
 ENV_SERIAL_KEY = "COLIBRINO_USB_SERIAL"
+ENV_OTA_MAC_KEY = "COLIBRINO_OTA_EXPECTED_MAC"
+ENV_OTA_HOST_KEY = "COLIBRINO_OTA_HOST"
 
 _IMU_RE = re.compile(
     r"^IMU,(\d+),(\d+),([A-Z_]+),([^,\s]+),([^,\s]+),([^,\s]+),([^,\s]+),([^,\s]+),([^,\s]+)\s*$"
@@ -65,6 +72,7 @@ _STATUS_RE = re.compile(r"^STATUS,(\d+),(.*)$")
 _EVENT_RE = re.compile(r"^EVENT,([A-Z0-9_]+)(?:,(.*))?$")
 _RESULT_RE = re.compile(
     r"^RESULT,IMU_BLINK,(PASS|NOT_PROVEN),still=(\d+),blink=(\d+),head=(\d+)"
+    r"(?:,free=(\d+))?"
 )
 
 
@@ -200,12 +208,18 @@ def parse_result(line: str) -> Optional[Dict[str, object]]:
     match = _RESULT_RE.match(line)
     if match is None:
         return None
-    return {
+    result: Dict[str, object] = {
         "verdict": match.group(1),
         "still": int(match.group(2)),
         "blink": int(match.group(3)),
         "head": int(match.group(4)),
     }
+    # The free-run RESULT carries a trailing ,free=<n>; older logs do not.
+    # The key is only present when the line carries it so old consumers see
+    # exactly the dict they always saw.
+    if match.group(5) is not None:
+        result["free"] = int(match.group(5))
+    return result
 
 
 def classify_line(line: str) -> str:
@@ -316,7 +330,7 @@ def split_sessions(lines: Sequence[str]) -> List[ProbeSession]:
             name, args = event
             if name == "IMU_PROBE_STAGE" and args:
                 stage_name = args[0]
-                if stage_name in CAPTURE_STAGES:
+                if stage_name in CAPTURE_STAGES or stage_name == FREE_RUN_STAGE:
                     if session_open and sessions:
                         sessions[-1].stage(stage_name).event_line = index
                         sessions[-1].end_line = index
@@ -365,6 +379,14 @@ def split_sessions(lines: Sequence[str]) -> List[ProbeSession]:
                 pending_stage_events = {}
                 pending_prepare = {}
         session = sessions[-1]
+        if row.stage == FREE_RUN_STAGE:
+            # Free-run rows get their own stage block. previous_stage_name is
+            # deliberately NOT updated, mirroring replay_imu_capture.cpp which
+            # skips unknown stages before its previous-stage bookkeeping, so
+            # the fallback session boundary behaves identically.
+            session.stage(FREE_RUN_STAGE).rows.append(row)
+            session.end_line = index
+            continue
         if row.stage not in CAPTURE_STAGES:
             continue
         session.stage(row.stage).rows.append(row)

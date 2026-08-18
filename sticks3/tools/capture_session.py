@@ -8,6 +8,19 @@ Modes
                         sticks3/.device-backups/logs/capture-YYYYMMDDTHHMMSS/
   --simulate raw.log    replay an existing device log through the same
                         parser/state machine with no serial port
+  --tcp [HOST[:PORT]]   cable-free capture over the firmware telemetry mirror
+                        (TelemetryMux, port 35533). The host defaults to the
+                        ignored .env COLIBRINO_OTA_HOST (else
+                        sticks3-ptt.local). Before connecting the target is
+                        identity-checked exactly like scripts/upload_ota.sh:
+                        ping resolves the IP and its ARP MAC must equal the
+                        ignored .env COLIBRINO_OTA_EXPECTED_MAC
+                        (case-insensitive). Loopback targets skip ping+ARP
+                        (tests) but every connection - loopback included -
+                        must open with the firmware greeting line
+                        EVENT,TELEMETRY,CONNECTED,<build> or it is refused.
+                        The socket is half-closed (SHUT_WR) immediately after
+                        connect so this host physically cannot send a byte.
 
 Safety properties
   * The device CDC channel is write-only from the firmware side; this tool
@@ -35,6 +48,7 @@ import json
 import os
 import queue
 import select
+import socket
 import subprocess
 import sys
 import threading
@@ -323,6 +337,14 @@ class SessionState:
         self.finalized = False
         self.disconnects = 0
 
+        # Wireless telemetry bookkeeping (STATUS build= tail, TCP greeting,
+        # EVENT,TELEMETRY,DROPPED counter). Present in every mode so old
+        # logs simply leave them at their defaults.
+        self.status_build: Optional[str] = None
+        self.telemetry_build: Optional[str] = None
+        self.telemetry_greetings = 0
+        self.telemetry_dropped_total: Optional[int] = None
+
     # ---- helpers ---------------------------------------------------------
 
     def current_run(self) -> Optional[RunRecord]:
@@ -490,6 +512,8 @@ class SessionState:
             self.last_status_ms_before_probe = ms
             if self.boot_seen and ms < BOOT_WINDOW_MS and len(self.boot_block) < 120:
                 self.boot_block.append({"ms": ms, "fields": fields})
+        if fields.get("build"):
+            self.status_build = fields["build"]
         if fields.get("calibrated") == "1":
             self.calibrated_seen = True
         self._check_boot_marker(ms, fields)
@@ -607,6 +631,24 @@ class SessionState:
             return
         if name in ("IMU_BLINK_SEQUENCE_CANDIDATE", "IMU_DOUBLE_BLINK_CANDIDATE"):
             self.marker({"type": "candidate", "event": name, "stage": args[0] if args else None, "count": args[1] if len(args) > 1 else None, "session_index": self.session_count, "host_ns": host_ns})
+            return
+        if name == "TELEMETRY" and args:
+            if args[0] == "CONNECTED":
+                self.telemetry_greetings += 1
+                self.telemetry_build = args[1] if len(args) > 1 else None
+                self.marker({"type": "telemetry_connected", "build": self.telemetry_build, "host_ns": host_ns})
+            elif args[0] == "DROPPED" and len(args) > 1:
+                try:
+                    total = int(args[1])
+                except ValueError:
+                    return
+                previous = self.telemetry_dropped_total
+                self.telemetry_dropped_total = total
+                if previous is None or total > previous:
+                    # Every increase must be announced: re-arm the key so
+                    # alarm() does not dedupe consecutive rises.
+                    self.alarm_state["telemetry_dropped"] = False
+                    self.alarm("telemetry_dropped", f"telemetry mirror dropped lines, total {total}")
             return
 
     def _on_result(self, line: str, host_ns: int) -> None:
@@ -762,6 +804,12 @@ class SessionState:
             "alignment": self.alignment,
             "alignment_note": "offset_ns is an ESTIMATED lower-envelope alignment (host_monotonic_ns ~= device_ms*1e6 + offset_ns); residual_ms describes host delay spread. Not a measured clock sync.",
             "fatigue": self.fatigue,
+            "status_build": self.status_build,
+            "telemetry": {
+                "greetings": self.telemetry_greetings,
+                "connected_build": self.telemetry_build,
+                "dropped_total": self.telemetry_dropped_total,
+            },
             "line_count": self.line_index + 1,
             "status_count": self.status_count,
             "probe_sessions": self.session_count,
@@ -1174,6 +1222,282 @@ def run_live(args, plan, plan_meta) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# TCP transport (wireless telemetry mirror)
+# --------------------------------------------------------------------------
+
+TCP_DEFAULT_PORT = 35533
+TCP_DEFAULT_HOST = "sticks3-ptt.local"
+TCP_GREETING_PREFIX = b"EVENT,TELEMETRY,CONNECTED,"
+TCP_GREETING_TIMEOUT_S = 3.0
+TCP_LIVENESS_TIMEOUT_S = 5.0  # device STATUS is guaranteed 1 Hz
+TCP_RECONNECT_INTERVAL_S = 0.5
+
+
+class TcpGuardError(Exception):
+    """Refusal of the TCP identity/greeting guard. Messages never contain
+    .env values, full MAC addresses, or resolved IPs."""
+
+
+def _tcp_is_loopback(host: str) -> bool:
+    return host.lower() in ("localhost", "::1") or host.startswith("127.")
+
+
+def parse_tcp_target(value: Optional[str], env: Dict[str, str]) -> Tuple[str, int]:
+    """HOST[:PORT] -> (host, port); bare --tcp defaults the host from the
+    ignored .env COLIBRINO_OTA_HOST (else sticks3-ptt.local), port 35533."""
+    host = ""
+    port = TCP_DEFAULT_PORT
+    text = (value or "").strip()
+    if text:
+        if text.count(":") == 1:
+            host, port_text = text.split(":", 1)
+            try:
+                port = int(port_text)
+            except ValueError:
+                raise TcpGuardError(f"--tcp port {port_text!r} is not a number")
+        else:
+            host = text
+    if not host:
+        host = env.get(cc.ENV_OTA_HOST_KEY, "").strip() or TCP_DEFAULT_HOST
+    return host, port
+
+
+def resolve_tcp_host(host: str, env_path: str) -> Tuple[str, Optional[str]]:
+    """Identity guard, run BEFORE every connect (mirrors scripts/upload_ota.sh):
+    ping resolves the IP, `arp -n` must report the MAC named by the ignored
+    .env COLIBRINO_OTA_EXPECTED_MAC (case-insensitive). Loopback targets skip
+    ping+ARP (for tests); the greeting requirement still applies to them.
+    Returns (ip, mac_last4)."""
+    if _tcp_is_loopback(host):
+        return ("127.0.0.1" if host.lower() == "localhost" else host, None)
+    env = cc.parse_env_file(env_path)
+    expected_mac = env.get(cc.ENV_OTA_MAC_KEY, "").strip().lower()
+    if not expected_mac:
+        raise TcpGuardError(
+            f"{cc.ENV_OTA_MAC_KEY} is not set in {env_path}; refusing to open a TCP capture to non-loopback hardware"
+        )
+    try:
+        ping = subprocess.run(
+            ["ping", "-c", "1", "-W", "2000", host],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise TcpGuardError("ping failed; cannot resolve the capture host")
+    ip = ""
+    for line in ping.stdout.splitlines():
+        if line.startswith("PING") and "(" in line and ")" in line:
+            ip = line.split("(", 1)[1].split(")", 1)[0]
+            break
+    if not ip:
+        raise TcpGuardError("capture host did not resolve; wake the Colibrino StickS3 and retry")
+    try:
+        arp = subprocess.run(["arp", "-n", ip], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        raise TcpGuardError("arp lookup failed; cannot verify the capture hardware")
+    actual_mac = ""
+    for line in arp.stdout.splitlines():
+        parts = line.split()
+        if "at" in parts:
+            index = parts.index("at")
+            if index + 1 < len(parts):
+                actual_mac = parts[index + 1].lower()
+            break
+    if not actual_mac or actual_mac != expected_mac:
+        raise TcpGuardError(
+            "refusing TCP capture: resolved hardware does not match "
+            f"{cc.ENV_OTA_MAC_KEY} (identity guard; nothing was connected)"
+        )
+    mac_last4 = actual_mac.replace(":", "").replace("-", "")[-4:]
+    return ip, mac_last4
+
+
+def tcp_connect_verified(host: str, port: int, env_path: str):
+    """Guarded connect: resolve+ARP check, connect, immediate SHUT_WR (this
+    host physically cannot send afterwards), then REQUIRE the firmware
+    greeting line within 3 s. The MAC proves the hardware, the greeting
+    proves the telemetry service. Returns (sock, buffered_bytes, mac_last4);
+    the buffer starts with the complete greeting line."""
+    ip, mac_last4 = resolve_tcp_host(host, env_path)
+    try:
+        sock = socket.create_connection((ip, port), timeout=5)
+    except OSError as exc:
+        raise TcpGuardError(f"connect failed ({type(exc).__name__})")
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        sock.close()
+        raise TcpGuardError("could not half-close the socket; refusing a writable stream")
+    sock.settimeout(0.2)
+    buffer = b""
+    deadline = time.monotonic() + TCP_GREETING_TIMEOUT_S
+    while b"\n" not in buffer:
+        if time.monotonic() >= deadline:
+            sock.close()
+            raise TcpGuardError("no telemetry greeting within 3 s; aborting")
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            chunk = b""
+        if not chunk:
+            sock.close()
+            raise TcpGuardError("connection closed before the telemetry greeting; aborting")
+        buffer += chunk
+    if not buffer.split(b"\n", 1)[0].startswith(TCP_GREETING_PREFIX):
+        sock.close()
+        raise TcpGuardError("first line is not the telemetry greeting; aborting")
+    return sock, buffer, mac_last4
+
+
+def run_tcp(args, plan, plan_meta) -> int:
+    env_path = args.env or os.path.join(cc.repo_root(), ".env")
+    env = cc.parse_env_file(env_path)
+    try:
+        host, port = parse_tcp_target(args.tcp, env)
+    except TcpGuardError as exc:
+        print(f"tcp capture refused: {exc}", file=sys.stderr)
+        return 2
+    try:
+        sock, buffer, mac_last4 = tcp_connect_verified(host, port, env_path)
+    except TcpGuardError as exc:
+        print(f"tcp capture refused: {exc}", file=sys.stderr)
+        return 3
+
+    # Only a verified, greeted connection ever creates a capture directory.
+    stamp = _dt.datetime.now().strftime("%Y%m%dT%H%M%S")
+    out_root = args.out_dir or os.path.join(cc.sticks3_dir(), ".device-backups", "logs")
+    directory = os.path.join(out_root, f"capture-{stamp}")
+    suffix = 1
+    while os.path.exists(directory):
+        suffix += 1
+        directory = os.path.join(out_root, f"capture-{stamp}-{suffix}")
+    writer = CaptureWriter(directory)
+    pane = sys.stdout.isatty() and not args.quiet
+    printer = make_printer(pane)
+    audio = Audio(enabled=not args.no_audio, sink=printer)
+    cues = CueScheduler(audio, lambda rec: state._emit_cue(rec), 1.0)
+    state = SessionState(writer, audio, cues, plan, args.plan_session if plan else None, plan_meta, "tcp", printer)
+
+    def redacted_tcp_identity(last4: Optional[str]) -> Dict[str, object]:
+        return {
+            "transport": "tcp",
+            "mac_last4": last4,
+            "port": port,
+            "host_is_loopback": _tcp_is_loopback(host),
+        }
+
+    state.identity = redacted_tcp_identity(mac_last4)
+    state.marker({"type": "session_start", "identity": state.identity})
+    printer(f"tcp capture -> {directory}")
+    printer(f"identity ok: transport=tcp port={port} mac=...{mac_last4 or '(loopback)'}; stream is receive-only (SHUT_WR)")
+
+    keys = Keys(enabled=not args.no_keys)
+    give_up_s = float(getattr(args, "tcp_give_up", 0.0) or 0.0)
+    quit_requested = False
+    last_pane = 0.0
+    last_flush = time.monotonic()
+
+    def feed_buffered() -> None:
+        nonlocal buffer, last_line_mono
+        host_ns = now_ns()
+        fed = False
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            state.feed(line + b"\n", host_ns)
+            fed = True
+        if fed:
+            last_line_mono = time.monotonic()
+
+    try:
+        with keys:
+            last_line_mono = time.monotonic()
+            feed_buffered()  # the greeting line goes through state.feed like any line
+            while not quit_requested:
+                dead = False
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    chunk = None
+                except OSError:
+                    chunk = None
+                    dead = True
+                if chunk == b"":
+                    dead = True
+                elif chunk:
+                    buffer += chunk
+                    feed_buffered()
+                if not dead and time.monotonic() - last_line_mono > TCP_LIVENESS_TIMEOUT_S:
+                    state.marker({"type": "warning", "text": "no telemetry line for 5 s (device STATUS is 1 Hz); treating the stream as lost"})
+                    dead = True
+                if dead:
+                    state.disconnects += 1
+                    state.marker({"type": "disconnect", "transport": "tcp"})
+                    state.alarm("disconnect", "telemetry stream lost")
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    sock = None
+                    buffer = b""
+                    give_up_at = time.monotonic() + give_up_s if give_up_s > 0 else None
+                    while sock is None and not quit_requested:
+                        key = keys.poll()
+                        if key is not None and handle_key(key, state, keys):
+                            quit_requested = True
+                            break
+                        if give_up_at is not None and time.monotonic() >= give_up_at:
+                            printer(f"tcp reconnect gave up after {give_up_s:.1f} s; finalizing")
+                            state.marker({"type": "reconnect_gave_up", "seconds": give_up_s})
+                            quit_requested = True
+                            break
+                        time.sleep(TCP_RECONNECT_INTERVAL_S)
+                        try:
+                            # Guarded reconnect: the resolve+ARP+greeting gauntlet
+                            # runs again in full for every attempt.
+                            sock, buffer, mac_last4 = tcp_connect_verified(host, port, env_path)
+                        except TcpGuardError:
+                            sock = None
+                            continue
+                        state.identity = redacted_tcp_identity(mac_last4)
+                        state.marker({"type": "reconnect", "identity": state.identity})
+                        state.clear_alarm("disconnect")
+                        printer("reconnected to the verified telemetry service")
+                        last_line_mono = time.monotonic()
+                        feed_buffered()
+                    continue
+                key = keys.poll()
+                if key is not None and handle_key(key, state, keys):
+                    quit_requested = True
+                now = time.monotonic()
+                if pane and now - last_pane > 0.25:
+                    sys.stdout.write("\r\033[K" + state.status_line())
+                    sys.stdout.flush()
+                    last_pane = now
+                if now - last_flush > 5:
+                    writer.write_session(state.to_json())
+                    last_flush = now
+            if pane:
+                sys.stdout.write("\n")
+            finalize(state, keys, writer)
+    except KeyboardInterrupt:
+        keys.restore()
+        state.finalized = True
+        state.marker({"type": "quit", "reason": "interrupt"})
+        writer.write_session(state.to_json())
+    finally:
+        try:
+            if sock is not None:
+                sock.close()
+        except Exception:
+            pass
+        audio.close()
+        writer.close()
+    printer(f"tcp capture finalized -> {directory}")
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--discover", action="store_true", help="enumerate USB serial descriptors and exit (no port is opened)")
@@ -1185,6 +1509,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--no-keys", action="store_true", help="do not read keys from the terminal")
     parser.add_argument("--quiet", action="store_true", help="no live status pane")
     parser.add_argument("--simulate", metavar="RAW_LOG", help="replay an existing device log without a serial port")
+    parser.add_argument(
+        "--tcp",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="HOST[:PORT]",
+        help="capture over the wireless telemetry mirror (default host from the ignored .env COLIBRINO_OTA_HOST else sticks3-ptt.local, port 35533; identity-guarded via ping+ARP like scripts/upload_ota.sh)",
+    )
+    parser.add_argument(
+        "--tcp-give-up",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="finalize after this many seconds of failed TCP reconnection (0 = keep trying until q)",
+    )
     parser.add_argument("--sim-speed", default=50.0, type=float, help="simulate pacing factor (0 = as fast as possible)")
     parser.add_argument("--out-dir", help="override the capture root (default sticks3/.device-backups/logs)")
     parser.add_argument("--env", help="override the .env path (default repo-root .env)")
@@ -1203,6 +1542,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.simulate:
         return run_simulate(args, plan, plan_meta)
+    if args.tcp is not None:
+        return run_tcp(args, plan, plan_meta)
     return run_live(args, plan, plan_meta)
 
 

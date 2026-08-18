@@ -30,6 +30,13 @@ their capture_date from the simulated source log (not the rehearsal date),
 never get cue-derived segments (the wearer never heard those cues) and are
 always review_required.
 
+Free-run capture blocks (stage CAPTURE_FREE_RUN, entered by a second
+Button-A tap during PREPARE_STILL) become their own fixtures: no automatic
+segments (the stage is unguided), always review_required, and their review
+reasons name the pending core-branch labels.schema.json stage-enum extension
+so promotion stays blocked until that schema knows the stage. A free-run
+session never counts toward --accept-runs.
+
 Fixture CSV values are copied verbatim from the device log. All outputs pass
 the de-identification guard before anything is written.
 """
@@ -65,7 +72,23 @@ DEFAULT_STAGE_LABELS = {
     "KEEP_HEAD_STILL": {"kind": "rest", "whole": {"expect": {"CLICK_CANDIDATE": {"eq": 0}}, "tolerance_ms": 0}},
     "BLINK_FIRMLY": {"kind": "coded_pattern", "whole": {"expect": {"CLICK_CANDIDATE": {"ge": 2}}, "tolerance_ms": 0}},
     "MOVE_HEAD": {"kind": "head_sweep", "whole": {"expect": {"CLICK_CANDIDATE": {"eq": 0}}, "tolerance_ms": 0}},
+    # CAPTURE_FREE_RUN deliberately has no default labels: the stage is
+    # unguided, so nothing about its content can be asserted automatically.
 }
+
+# Stages fixtures are generated for. The trailing CAPTURE_FREE_RUN entry is
+# the tooling-side stage-enum extension: cc.CAPTURE_STAGES itself must stay
+# untouched (guided logic and replay parity iterate it). NOTE: the labels
+# schema on the core branch (v2/traces/labels.schema.json) does not carry
+# CAPTURE_FREE_RUN in its capture.stage enum yet; free-run fixtures embed a
+# review reason saying so, which keeps them un-promotable until that schema
+# is extended.
+FIXTURE_STAGES = cc.CAPTURE_STAGES + (cc.FREE_RUN_STAGE,)
+FREE_RUN_SCHEMA_NOTE = (
+    "free-run fixture: v2/traces/labels.schema.json (core branch) must add "
+    "CAPTURE_FREE_RUN to its capture.stage enum before this fixture can be "
+    "promoted"
+)
 
 _LOG_DATE_RE = re.compile(r"device-monitor-(\d{2})(\d{2})(\d{2})-\d{6}")
 _CAPTURE_DATE_RE = re.compile(r"capture(?:-sim)?-(\d{4})(\d{2})(\d{2})T\d{6}")
@@ -499,6 +522,18 @@ def derive_tsv(labels: Dict[str, object]) -> str:
 # --------------------------------------------------------------------------
 
 
+def last_status_build(lines: Sequence[str]) -> Optional[str]:
+    """Last build=<sha> seen in a STATUS line, or None for older logs."""
+    build: Optional[str] = None
+    for line in lines:
+        if not line.startswith("STATUS,") or ",build=" not in line:
+            continue
+        parsed = cc.parse_status(line)
+        if parsed is not None and parsed[1].get("build"):
+            build = parsed[1]["build"]
+    return build
+
+
 def ensure_replay_bin(explicit: Optional[str]) -> Tuple[str, Optional[str]]:
     """Return (path, tempdir_or_None)."""
     if explicit:
@@ -551,8 +586,11 @@ def make_fixtures_for_input(
     parity_unavailable = 0
     controls_clean_all = True
     firmware_commit = args.firmware_commit
-    if firmware_commit is None and source.session_json:
-        firmware_commit = None  # firmware build is not knowable from a capture; keep null unless given
+    if firmware_commit is None:
+        # STATUS lines carry build=<sha> since the wireless telemetry build;
+        # the last one seen in the log is the default provenance. Older logs
+        # have no build field and keep null unless --firmware-commit is given.
+        firmware_commit = last_status_build(source.lines)
     capture_tool_commit = source.session_json.get("colibrino_head") if source.session_json else None
     pending_writes: List[Tuple[str, str]] = []
 
@@ -626,14 +664,19 @@ def make_fixtures_for_input(
         if source.plan_sha_changed:
             review_base.append("plan file changed since the capture (session.json plan sha256 differs); labels come from the current file")
 
-        for stage_name in cc.CAPTURE_STAGES:
+        for stage_name in FIXTURE_STAGES:
             block = session.stages.get(stage_name)
             if block is None or not block.rows:
                 continue
             labels_spec = (spec.get("labels", {}) or {}).get(stage_name) if spec else None
             if not isinstance(labels_spec, dict):
-                labels_spec = DEFAULT_STAGE_LABELS[stage_name]
+                # Free-run has no default label spec: an unguided stage gets
+                # no automatic segments, only review reasons.
+                labels_spec = DEFAULT_STAGE_LABELS.get(stage_name, {})
             review = list(review_base)
+            if stage_name == cc.FREE_RUN_STAGE:
+                review.append("free-run capture: unguided stage; nothing about its content can be asserted automatically")
+                review.append(FREE_RUN_SCHEMA_NOTE)
             # Cue markers of a rehearsal were never heard by the wearer: no
             # per-cue / per-group segments and no refinement for them.
             cues = [] if source.simulated else source.cues_for(idx, stage_name)
@@ -836,6 +879,21 @@ def accept_runs(run_ids: Sequence[str], session_dirs: Sequence[str], replay_bin:
         session = next((s for s in source.sessions if s.index == session_index), None)
         if session is None:
             rows.append({"run_id": run_id, "found": True, "capture": os.path.basename(source.path), "verdict": "SESSION_NOT_IN_RAW"})
+            continue
+        if cc.FREE_RUN_STAGE in session.stages:
+            # A free-run session is unguided data with no control stages: it
+            # can NEVER satisfy worn acceptance, whatever a replay would say.
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "found": True,
+                    "capture": os.path.basename(source.path),
+                    "session_index": session_index,
+                    "run_status": found["run"].get("status"),
+                    "simulated": source.simulated,
+                    "verdict": "FREE_RUN",
+                }
+            )
             continue
         start, end = session.line_range()
         with tempfile.NamedTemporaryFile("w", suffix=".log", prefix=f"run-{run_id}-", delete=False, encoding="utf-8") as handle:
