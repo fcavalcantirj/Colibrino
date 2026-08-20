@@ -29,7 +29,12 @@
       "round_one_corrections_commit": "c7a82ac06ebfd72016082321588daa97d30c2c1b",
       "round_one_corrections_tip": "b5e65b8",
       "round_one_corrections_note": "Stacked on 84b5bea; restores the owner-ratified three-rule safety list, records the canonical round-one unit set as PROPOSED, the capture-path decision, the v2/ paths and presets, and untracks .coverage. A later Oracle state-handoff commit may advance this branch; Colibrino records only this commit and does not chase it.",
-      "stack_order": ["325c3ea(main, includes 3c67984)", "84b5bea", "c7a82ac", "b5e65b8"],
+      "stack_order": [
+        "325c3ea(main, includes 3c67984)",
+        "84b5bea",
+        "c7a82ac",
+        "b5e65b8"
+      ],
       "authority": "Executable oracle map, specification, and assisted branch-only implementation workflow. Its stacked engine and Colibrino documentation must not be merged, rebased, squashed, or rewritten without the repository's exact user merge grant."
     }
   ],
@@ -299,7 +304,7 @@
     {
       "id": "T15",
       "name": "Wireless telemetry mirror, free-run capture, and build id",
-      "status": "implemented_pending_hardware",
+      "status": "implemented_and_hardware_validated",
       "acceptance": [
         "A USB cable is a physical anchor on the head mount and distorts the measured blink impulses, so worn capture runs cable-free: the firmware mirrors every diagnostics byte to a read-only TCP stream (port 35533, one client, inbound bytes discarded so the socket can never become a command channel; Button A remains the sole input).",
         "Mirroring is non-blocking by construction: fixed 32 KB ring, bounded per-pass drain via raw MSG_DONTWAIT send, oldest whole lines dropped on overflow with an explicit EVENT,TELEMETRY,DROPPED counter; WiFiClient::write is never used for bulk data.",
@@ -308,7 +313,7 @@
         "STATUS gains trailing build=, batt=, tele= fields and boot emits EVENT,BUILD,<sha> (git identity injected at compile time), so the running image is identifiable without USB.",
         "The host capture tool gains --tcp with the same ping+ARP-MAC identity guard as the OTA uploader, half-closes its send side immediately (shutdown(SHUT_WR)), requires the EVENT,TELEMETRY,CONNECTED greeting within 3 seconds, and treats 5 seconds of silence as a guarded-reconnect trigger.",
         "Security posture is recorded: unauthenticated read-only telemetry on the trusted home LAN, single client, no credential ever in the stream; a LAN peer can read head-motion telemetry while the port is up.",
-        "Hardware gates pending: the fourth authorized OTA upload; post-reboot verification over TCP (greeting sha matches the built sha; STATUS armed=0 ir=0 calibrated=1 imu_blink=0 ota=READY tele=1); then the no-cable equivalence acceptance (effective rate within 5% of the retained USB baseline, DROPPED 0 or under 0.1%, comparable usec-gap histogram, replay parity, one 30 s free-run block)."
+        "Hardware validated 2026-08-18 (telemetry path only): fourth OTA (6fff220) uploaded and its greeting/STATUS verified over TCP; that trial exposed an accept-gate defect (the 'if (incoming)' bool conversion is WiFiClient::connected(), whose zero-length recv probe latches false on the capture host's immediate half-close FIN, closing the client un-greeted) - fixed in 254fb7e with an fd()>=0 gate, adversarially re-reviewed (3 lenses vs the installed 2.0.17 core, no findings above LOW), fifth OTA (254fb7e) then verified end-to-end with the sanctioned --tcp capture tool. Equivalence acceptance PASS on the bench session capture-20260818T133312: per-stage effective rate 168.1-172.3 Hz vs USB baseline 164.2-168.8 Hz (delta +1.9% to +2.4%, within 5%), DROPPED 0 over 30393 lines, 0 unknown lines, usec-gap p50 ~4.99 ms both transports with tighter TCP tails (max 34 ms vs 40 ms), split_sessions + replay parity 4/4 MATCH, one 40 s free-run block (11912 rows, 170.3 Hz) with hardware-validated double-tap entry, tap stop, and RESULT free= tail. Free-run conversion needs the second tap inside the 3 s PREPARE_STILL window; the screen shows 'tap BLUE: free run'. Sizes at 254fb7e: RAM 98244 B (30.0%), Flash 1063597 B (31.8%). Worn sessions unblocked."
       ]
     }
   ],

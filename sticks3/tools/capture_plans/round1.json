@@ -41,7 +41,7 @@
           "probe": false,
           "marker": "BOOT",
           "instructions": {
-            "operator": "Plug the device in with your hands off it. Wait for at least 60 seconds of STATUS lines before touching Button A."
+            "operator": "Device powered on, resting on the table, hands off. Wait about one minute of quiet. The tool announces the next run by itself."
           },
           "min_status_seconds": 60,
           "expected_status": {
@@ -60,9 +60,9 @@
           "commit_class": "public",
           "firm_blink_count": 0,
           "instructions": {
-            "KEEP_HEAD_STILL": "Device resting on the bench. Do not touch it.",
-            "BLINK_FIRMLY": "Device resting on the bench. Do not touch it. Read the display and confirm it says blink twice, pause one second.",
-            "MOVE_HEAD": "Pick the device up and move it by hand as when pointing, then set it down."
+            "KEEP_HEAD_STILL": "Device on the table. Touch nothing.",
+            "BLINK_FIRMLY": "Device on the table. Touch nothing. You do nothing in this whole run.",
+            "MOVE_HEAD": "Still touch nothing. The device stays on the table until the run completes."
           },
           "cues": {
             "KEEP_HEAD_STILL": [],
@@ -189,7 +189,7 @@
           "firm_blink_count": 6,
           "instructions": {
             "KEEP_HEAD_STILL": "Head still. Blink normally.",
-            "BLINK_FIRMLY": "One single hard blink on each beep. Nothing between beeps.",
+            "BLINK_FIRMLY": "One single hard blink on each beep. Nothing between beeps. Beeps come from the computer.",
             "MOVE_HEAD": "Move your head as when pointing."
           },
           "cues": {
@@ -303,7 +303,7 @@
           "firm_blink_count": 8,
           "instructions": {
             "KEEP_HEAD_STILL": "Head still. Blink normally.",
-            "BLINK_FIRMLY": "Four evenly spaced hard blinks, one per beep. Two groups.",
+            "BLINK_FIRMLY": "Four evenly spaced hard blinks, one per beep. Two groups. Beeps come from the computer.",
             "MOVE_HEAD": "Move your head as when pointing."
           },
           "cues": {
@@ -437,7 +437,7 @@
           "probe": false,
           "marker": "BREAK_REMOUNT",
           "instructions": {
-            "operator": "Take the glasses off. Rest the eyes for at least 45 seconds. Remount the device fresh before the next run."
+            "operator": "Take the glasses off. Close your eyes and rest for at least 45 seconds. Then put the glasses back on fresh and settle them."
           },
           "min_rest_seconds": 45
         },
@@ -514,7 +514,7 @@
           "firm_blink_count": 12,
           "instructions": {
             "KEEP_HEAD_STILL": "Head still. Blink normally.",
-            "BLINK_FIRMLY": "Blink hard on each beep. Two quick, pause, two quick. Three patterns.",
+            "BLINK_FIRMLY": "Blink hard on each beep. Two quick, pause, two quick. Three patterns. Beeps come from the computer.",
             "MOVE_HEAD": "Move your head as when pointing."
           },
           "cues": {
@@ -1121,7 +1121,7 @@
           "firm_blink_count": 8,
           "instructions": {
             "KEEP_HEAD_STILL": "Head still. Blink normally.",
-            "BLINK_FIRMLY": "One single hard blink on each beep. Nothing between beeps.",
+            "BLINK_FIRMLY": "One single hard blink on each beep. Nothing between beeps. Beeps come from the computer.",
             "MOVE_HEAD": "Move your head as when pointing."
           },
           "cues": {
@@ -1247,7 +1247,7 @@
           "firm_blink_count": 12,
           "instructions": {
             "KEEP_HEAD_STILL": "Head still. Blink normally.",
-            "BLINK_FIRMLY": "Blink hard on each beep. Two quick, pause, two quick. Three patterns.",
+            "BLINK_FIRMLY": "Blink hard on each beep. Two quick, pause, two quick. Three patterns. Beeps come from the computer.",
             "MOVE_HEAD": "Move your head as when pointing."
           },
           "cues": {

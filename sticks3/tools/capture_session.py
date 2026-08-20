@@ -49,9 +49,11 @@ import json
 import os
 import queue
 import select
+import shutil
 import socket
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -78,9 +80,32 @@ PYSERIAL_HINT = (
 AFPLAY = "/usr/bin/afplay"
 TINK = "/System/Library/Sounds/Tink.aiff"
 SAY = "/usr/bin/say"
+# Operator-facing wording for each plan mount; announced on every probe run
+# selection so a mount change is never implicit.
+MOUNT_TEXT = {
+    "bench": "Device stays flat on the table. Do not wear it.",
+    "glasses_right_temple": "Put the glasses on your face. Device on the right temple.",
+    "glasses_left_temple": "Put the glasses on your face. Device on the left temple.",
+    "headband_front": "Wear the headband. Device at the front of your head.",
+}
 BAUD = 115200
 BOOT_WINDOW_MS = 60_000
 SESSION_SCHEMA = "colibrino-v2-capture-session/1"
+# Display-only stage durations mirroring the firmware constants in
+# sticks3/src/main.cpp (kImuPrepareMs, kImuStillCaptureMs, kImuBlinkCaptureMs,
+# kImuHeadCaptureMs, kImuFreeRunCaptureMs). Drives the operator countdown; a
+# drift against the device is harmless (the device clock is ground truth).
+STAGE_SECONDS = {
+    "PREPARE_STILL": 3.0,
+    "PREPARE_BLINKS": 3.0,
+    "PREPARE_HEAD": 3.0,
+    "KEEP_HEAD_STILL": 6.0,
+    "BLINK_FIRMLY": 15.0,
+    "MOVE_HEAD": 12.0,
+    "CAPTURE_FREE_RUN": 90.0,
+}
+# --verbose-status restores the old full-field status line for debugging.
+VERBOSE_STATUS = False
 
 
 def now_ns() -> int:
@@ -111,10 +136,17 @@ class Audio:
                 pass
 
     def say(self, text: str) -> None:
+        # Instructions must be unmissable in the terminal: the status line
+        # buries plain prints, so every spoken instruction is also printed as
+        # a banner (and the terminal bell rings). Wrapped at 60 columns so a
+        # long announcement never soft-wraps mid-word at the terminal edge.
+        bar = "=" * 64
+        self._sink("\a" + bar)
+        for chunk in textwrap.wrap(text.upper(), width=60) or [""]:
+            self._sink(">>> " + chunk)
+        self._sink(bar)
         if self.enabled:
             self._queue.put(text)
-        else:
-            self._sink("\a" + "SAY: " + text)
 
     def beep(self) -> None:
         if self.enabled:
@@ -366,6 +398,14 @@ class SessionState:
             self.writer.marker(record)
         self.print(f"CUE {record.get('tag')} ({record.get('sound')}) slip={record.get('slip_ms')}ms")
 
+    def _banner(self, text: str) -> None:
+        # Unmissable print-only block; used where speech would lag the stage.
+        bar = "=" * 64
+        self.print(bar)
+        for chunk in textwrap.wrap(text, width=60) or [""]:
+            self.print(">>> " + chunk)
+        self.print(bar)
+
     def alarm(self, key: str, text: str) -> None:
         if self.alarm_state.get(key):
             return
@@ -402,7 +442,22 @@ class SessionState:
                 if text:
                     self.audio.say(text)
             else:
-                self.audio.say(f"Next run {run.run_id}. Start the probe when ready.")
+                self.announce_probe_run(run)
+
+    def announce_probe_run(self, run) -> None:
+        # One complete, self-sufficient instruction per probe run: mount,
+        # blink-stage preview, and exactly how to start. A mount change must
+        # never be implicit.
+        parts = [f"Next run {run.run_id}."]
+        mount_text = MOUNT_TEXT.get(run.spec.get("mount"))
+        if mount_text:
+            parts.append(mount_text)
+        blink_hint = str(run.spec.get("instructions", {}).get("BLINK_FIRMLY", ""))
+        if blink_hint:
+            parts.append(f"In the blink stage: {blink_hint}")
+        parts.append("When ready, tap the blue button once to start. "
+                     "If the screen says IR PROBE, tap once for MOTION first.")
+        self.audio.say(" ".join(parts))
 
     def redo_current(self) -> None:
         with self.lock:
@@ -608,14 +663,24 @@ class SessionState:
                 text = instructions.get(cc.PREPARE_FOR_STAGE[stage])
                 if text:
                     self.marker({"type": "instruction", "stage": cc.PREPARE_FOR_STAGE[stage], "text": text})
-                    self.audio.say(str(text))
-            elif stage in cc.CAPTURE_STAGES:
+                    self.audio.say(f"GET READY: {text} Starts in 3 seconds.")
+            elif stage in cc.CAPTURE_STAGES or stage == cc.FREE_RUN_STAGE:
+                # The GET READY banner fired during the prepare stage; this one
+                # marks the exact moment to act, synchronized with the stage.
+                if stage == cc.FREE_RUN_STAGE:
+                    self._banner("NOW: FREE RUN RECORDING. TAP ONCE TO STOP.")
+                else:
+                    text = instructions.get(stage)
+                    if text:
+                        seconds = STAGE_SECONDS.get(stage)
+                        header = f"NOW ({seconds:.0f} SECONDS): " if seconds else "NOW: "
+                        self._banner(header + str(text).upper())
                 cue_list = spec.get("cues", {}).get(stage, []) if isinstance(spec, dict) else []
                 if cue_list:
                     context = {"run_id": run.run_id if run else None, "stage": stage, "session_index": self.session_count, "stage_host_ns": host_ns}
                     self.cues.schedule(cue_list, context, host_ns)
             elif stage == "CAPTURE_COMPLETE":
-                pass
+                self._banner("RUN DONE. HANDS OFF. NEXT INSTRUCTION COMING.")
             return
         if name == "IMU_PROBE_COMPLETE":
             samples = None
@@ -661,9 +726,22 @@ class SessionState:
             self.current_attempt["result"] = result
             self.current_attempt["end_line"] = self.line_index
         self.marker({"type": "result", "run_id": run.run_id if run else None, "session_index": self.session_count, "result": result, "host_ns": host_ns})
-        verdict = "pass" if result["verdict"] == "PASS" else "not proven"
-        self.print(f"RESULT {run.run_id if run else '?'}: {result['verdict']} still={result['still']} blink={result['blink']} head={result['head']}")
-        self.audio.say(f"Result {verdict}. still {result['still']}, blink {result['blink']}, head {result['head']}.")
+        counts = f"still={result['still']} blink={result['blink']} head={result['head']}"
+        self.print(f"RESULT {run.run_id if run else '?'}: {result['verdict']} {counts}")
+        # Humane announcement: for a control run the firmware's NOT_PROVEN with
+        # zero counts is exactly correct and must not read as failure. The
+        # RESULT log line above stays verbatim.
+        run_id = run.run_id if run else "run"
+        expected_blinks = run.spec.get("firm_blink_count") if run is not None and isinstance(run.spec, dict) else None
+        clean = result["still"] == 0 and result["blink"] == 0 and result["head"] == 0
+        if result["verdict"] == "PASS":
+            self.audio.say(f"Result pass. {counts}.")
+        elif expected_blinks == 0 and clean:
+            self.audio.say(f"Run {run_id} clean. Exactly as expected.")
+        elif expected_blinks == 0:
+            self.audio.say(f"Check run {run_id}: unexpected events. {counts}.")
+        else:
+            self.audio.say(f"Run {run_id} recorded. Blink patterns seen: {result['blink']}. Not proven is normal during capture.")
         self._finish_run_after_result()
 
     def _close_probe(self, host_ns: int) -> None:
@@ -700,7 +778,8 @@ class SessionState:
                     if text:
                         self.audio.say(text)
                 else:
-                    self.print(f"next run: {nxt.run_id} ({nxt.run_kind}) - press n/p to change, start the probe when ready")
+                    self.print(f"next run: {nxt.run_id} ({nxt.run_kind}) - press n/p to change")
+                    self.announce_probe_run(nxt)
 
     def _on_imu(self, line: str, host_ns: int) -> None:
         row = cc.parse_imu(line, self.line_index)
@@ -746,6 +825,55 @@ class SessionState:
         return (len(self.recent_rows) - 1) * 1000.0 / span_ms
 
     def status_line(self) -> str:
+        if VERBOSE_STATUS:
+            return self._status_line_verbose()
+        # Operator-first status: always states what to do RIGHT NOW, from the
+        # same state that drives the banners, with a countdown. Between runs it
+        # names the next action instead of showing the finished stage.
+        stage = self.stage or "IDLE"
+        elapsed = (now_ns() - self.stage_host_ns) / 1e9 if self.stage_host_ns else 0.0
+        in_stage = self.probe_open and (
+            stage in cc.PREPARE_FOR_STAGE or stage in cc.CAPTURE_STAGES or stage == cc.FREE_RUN_STAGE
+        )
+        run = (self.current_attempt_run if in_stage else None) or self.current_run()
+        run_text = run.run_id if run else "-"
+        spec = run.spec if run is not None and isinstance(run.spec, dict) else {}
+        instructions = spec.get("instructions", {}) if isinstance(spec, dict) else {}
+
+        tail_parts = []
+        hz = self.effective_hz()
+        if hz:
+            tail_parts.append(f"{hz:.0f} Hz")
+        if self.latest_status is not None:
+            fields = self.latest_status[1]
+            batt = fields.get("batt")
+            if batt is not None:
+                tail_parts.append(f"batt {batt}")
+            if fields.get("armed") == "1":
+                tail_parts.append("ALARM ARMED")
+            if fields.get("mode") == "MOUSE":
+                tail_parts.append("ALARM MODE=MOUSE")
+        tail = " | ".join(tail_parts)
+
+        if in_stage and stage in cc.PREPARE_FOR_STAGE:
+            left = max(0.0, STAGE_SECONDS.get(stage, 3.0) - elapsed)
+            body = f"GET READY {left:.0f}s: {cc.PREPARE_FOR_STAGE[stage].replace('_', ' ').lower()} next"
+        elif in_stage and stage == cc.FREE_RUN_STAGE:
+            body = f"NOW {elapsed:.0f}s: free run recording, tap once to stop"
+        elif in_stage:
+            text = str(instructions.get(stage) or stage.replace("_", " ").lower())
+            left = max(0.0, STAGE_SECONDS.get(stage, 0.0) - elapsed)
+            body = f"NOW {left:.0f}s: {text}"
+        elif run is not None and run.probe and run.status in ("pending", "redo"):
+            mount = str(spec.get("mount") or "")
+            prefix = "glasses on, " if mount.startswith("glasses") else ("device on table, " if mount == "bench" else "")
+            body = f"NEXT: {prefix}tap button once to start"
+        else:
+            body = "WAITING: follow the latest banner"
+        line = f"{run_text} | {body}"
+        return f"{line} | {tail}" if tail else line
+
+    def _status_line_verbose(self) -> str:
         run = self.current_run()
         run_text = run.run_id if run else "-"
         stage = self.stage or "IDLE"
@@ -1065,7 +1193,7 @@ def run_simulate(args, plan, plan_meta) -> int:
                         break
                 now = time.monotonic()
                 if pane and now - last_pane > 0.25:
-                    sys.stdout.write("\r\033[K" + state.status_line())
+                    sys.stdout.write("\r\033[K" + state.status_line()[: max(20, shutil.get_terminal_size((120, 24)).columns - 1)])
                     sys.stdout.flush()
                     last_pane = now
                 if now - last_flush > 5:
@@ -1197,7 +1325,7 @@ def run_live(args, plan, plan_meta) -> int:
                     quit_requested = True
                 now = time.monotonic()
                 if pane and now - last_pane > 0.25:
-                    sys.stdout.write("\r\033[K" + state.status_line())
+                    sys.stdout.write("\r\033[K" + state.status_line()[: max(20, shutil.get_terminal_size((120, 24)).columns - 1)])
                     sys.stdout.flush()
                     last_pane = now
                 if now - last_flush > 5:
@@ -1493,7 +1621,7 @@ def run_tcp(args, plan, plan_meta) -> int:
                     quit_requested = True
                 now = time.monotonic()
                 if pane and now - last_pane > 0.25:
-                    sys.stdout.write("\r\033[K" + state.status_line())
+                    sys.stdout.write("\r\033[K" + state.status_line()[: max(20, shutil.get_terminal_size((120, 24)).columns - 1)])
                     sys.stdout.flush()
                     last_pane = now
                 if now - last_flush > 5:
@@ -1529,6 +1657,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--no-audio", action="store_true", help="print a bell and text instead of afplay/say")
     parser.add_argument("--no-keys", action="store_true", help="do not read keys from the terminal")
     parser.add_argument("--quiet", action="store_true", help="no live status pane")
+    parser.add_argument("--verbose-status", action="store_true", help="old full-field status line instead of the operator view")
     parser.add_argument("--simulate", metavar="RAW_LOG", help="replay an existing device log without a serial port")
     parser.add_argument(
         "--tcp",
@@ -1549,6 +1678,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--out-dir", help="override the capture root (default sticks3/.device-backups/logs)")
     parser.add_argument("--env", help="override the .env path (default repo-root .env)")
     args = parser.parse_args(argv)
+
+    global VERBOSE_STATUS
+    VERBOSE_STATUS = bool(getattr(args, "verbose_status", False))
 
     if args.discover:
         return discover()
