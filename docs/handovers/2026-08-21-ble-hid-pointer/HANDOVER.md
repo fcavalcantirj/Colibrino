@@ -1,8 +1,8 @@
 ---
 slug: ble-hid-pointer
 date: 2026-08-21
-status: open
-round: 0
+status: approved
+round: 1
 author_session: Architect session (2026-08-17..21 cycle): validated wireless telemetry + fifth OTA, closed the IMU blink-click channel on evidence, validated Mac camera click live; now commissioning the cable-free pointer
 ---
 
