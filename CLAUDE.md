@@ -43,3 +43,12 @@ tip is never RED; `bedside-countdown-s3` is never a target.
   not only a mouse click.
 - Upstream roadmap that never shipped: lateral-tilt scroll and head-gesture
   commands.
+
+## Blink-click channel (decided 2026-08-21)
+
+Industry consensus, confirmed by worn data: blinks come from a dedicated eye
+sensor or camera; the IMU is the head pointer + motion veto, never the blink
+signal. The gyro click channel is closed. Active experiment: macOS
+"alternative pointer actions" (webcam Eye Blink → click) with the StickS3 as
+pointer; on-device future class is VCNL4040/TMD2635 IR-proximity (VL53L4CD
+ToF rejected on physics). Details: PROJECT_KNOWLEDGE 2026-08-21 entry.

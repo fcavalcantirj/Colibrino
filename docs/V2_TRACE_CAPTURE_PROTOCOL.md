@@ -290,6 +290,18 @@ TCRT5000 module when any of these happens across Sessions A and B:
 The trigger opens an evaluation, not a purchase or a mount decision. Every
 option still needs a schematic, optical review and physical mount test.
 
+**Evaluation OPENED 2026-08-21** — trigger: a control-stage sequence
+(`head=1`) in Session A run V2 (`capture-20260820T173559`), plus both
+designated V runs failing (`blink=0`). Candidate corrections from the
+evaluation's first research pass: the VL53L4CD-class ToF named above is
+REJECTED on datasheet physics (±7 mm accuracy and a ~70 mm practical floor
+cannot resolve a 2-5 mm lid excursion at ~10 mm); the viable on-device class
+is integrated IR-proximity ICs (Vishay VCNL4040 / ams-OSRAM TMD2635 — the
+Google Glass wink sensor class, IEC 62471 eye-safe at low drive). The first
+lane under test is off-device and free: macOS "alternative pointer actions"
+(webcam expression-to-click, including Eye Blink) with the StickS3 as the
+HID pointer. Full evidence in `PROJECT_KNOWLEDGE.md` (2026-08-21 entry).
+
 ## 9. Timing alignment is estimated provenance
 
 The device prints its own `millis()`; the host records `monotonic_ns` per
