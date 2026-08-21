@@ -10,6 +10,7 @@
 #include <cmath>
 
 #include "colibrino/imu_blink_detector.h"
+#include "colibrino/mouse_output_policy.h"
 #include "colibrino/motion_controller.h"
 #include "colibrino/signal_analysis.h"
 
@@ -73,6 +74,47 @@ void validatePointerMotion() {
       controller.update({100.0f, 100.0f, 100.0f}, 0.5f);
   check("pointer_invalid_timestep_rejected",
         invalid_dt.x == 0 && invalid_dt.y == 0);
+}
+
+void validateMouseOutputPolicy() {
+  using colibrino::MouseLockReason;
+  using colibrino::MouseOutputPolicy;
+  using colibrino::MouseTransport;
+
+  MouseOutputPolicy policy;
+  check("hid_policy_boot_locked",
+        !policy.armed() && !policy.canReport() &&
+            policy.selectedTransport() == MouseTransport::kNone);
+
+  policy.setMouseMode(true);
+  policy.setCalibrated(true);
+  policy.setImuFresh(true);
+  policy.setTransportReadiness(true, true);
+  MouseLockReason ignored;
+  policy.takeReleaseRequest(ignored);
+  const bool armed = policy.requestArm();
+  const auto usb_report = policy.routeMotion(7, -4, 100);
+  check("hid_policy_wired_preferred",
+        armed && usb_report.ready &&
+            usb_report.transport == MouseTransport::kUsb &&
+            usb_report.x == 7 && usb_report.y == -4);
+
+  policy.setTransportReadiness(false, true);
+  const bool locked_on_switch = !policy.armed();
+  policy.takeReleaseRequest(ignored);
+  const bool rearmed = policy.requestArm();
+  const bool pending = !policy.routeMotion(20, 10, UINT32_MAX - 3).ready;
+  const auto ble_report = policy.routeMotion(20, 10, 4);
+  check("hid_policy_ble_bounded_rollover",
+        locked_on_switch && rearmed && pending && ble_report.ready &&
+            ble_report.transport == MouseTransport::kBle &&
+            ble_report.x == 40 && ble_report.y == 20);
+
+  policy.setTransportReadiness(false, false);
+  policy.setTransportReadiness(false, true);
+  check("hid_policy_reconnect_no_stale_output",
+        !policy.armed() && !policy.canReport() &&
+            !policy.routeMotion(50, 50, 20).ready);
 }
 
 colibrino::SeparationResult makeSeparation() {
@@ -218,6 +260,7 @@ void setup() {
 
   validateGyroCalibration();
   validatePointerMotion();
+  validateMouseOutputPolicy();
   validateBlinkDetector();
   validateImuBlinkSequence();
   validateFeasibilityProtocol();
