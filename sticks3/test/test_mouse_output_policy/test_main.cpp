@@ -92,6 +92,7 @@ void test_transport_loss_locks_once_and_reconnect_stays_locked() {
 void test_mode_ota_auth_report_and_imu_faults_lock() {
   const MouseLockReason reasons[] = {
       MouseLockReason::kModeExit,       MouseLockReason::kOta,
+      MouseLockReason::kAdvertisingFailure,
       MouseLockReason::kAuthentication, MouseLockReason::kReportFailure,
       MouseLockReason::kImuTimeout,     MouseLockReason::kInvalidTiming,
   };
@@ -116,6 +117,11 @@ void test_mode_ota_auth_report_and_imu_faults_lock() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(expected),
                           static_cast<int>(policy.lastLockReason()));
     TEST_ASSERT_FALSE(policy.routeMotion(10, 10, 20).ready);
+    MouseLockReason released_for;
+    TEST_ASSERT_TRUE(policy.takeReleaseRequest(released_for));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(expected),
+                          static_cast<int>(released_for));
+    TEST_ASSERT_FALSE(policy.takeReleaseRequest(released_for));
   }
 }
 

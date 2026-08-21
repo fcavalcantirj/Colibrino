@@ -2,11 +2,14 @@
 //
 // This file is intentionally the only owner of host HID side effects and the
 // M5PM1 external-power decision. Portable motion and blink code can recommend a
-// delta or event, but only the guarded application state may send it to USB.
+// delta or event, but only the guarded application state may send it to a host.
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <USB.h>
 #include <USBHIDMouse.h>
+#include <esp_heap_caps.h>
+
+#include <atomic>
 
 #if __has_include("colibrino_secrets.h")
 #include <ArduinoOTA.h>
@@ -20,8 +23,10 @@
 
 #include "colibrino/config.h"
 #include "colibrino/imu_blink_detector.h"
+#include "colibrino/mouse_output_policy.h"
 #include "colibrino/motion_controller.h"
 #include "colibrino/signal_analysis.h"
+#include "ble_mouse_transport.h"
 #include "telemetry_mux.h"
 #include "ir_probe.h"
 
@@ -36,6 +41,10 @@ using colibrino::BlinkSignalSample;
 using colibrino::FeasibilityStage;
 using colibrino::GyroBiasCalibrator;
 using colibrino::ImuBlinkDetector;
+using colibrino::DeliberateHoldGate;
+using colibrino::MouseLockReason;
+using colibrino::MouseOutputPolicy;
+using colibrino::MouseTransport;
 using colibrino::MotionConfig;
 using colibrino::MotionController;
 using colibrino::PointerDelta;
@@ -44,6 +53,79 @@ using colibrino::Vec3;
 
 /// User-visible pages. Mode is also a safety boundary: only kMouse may emit HID.
 enum class AppMode : uint8_t { kIrProbe, kMotionMonitor, kMouse };
+
+class MouseOutputRouter {
+ public:
+  MouseOutputRouter(USBHIDMouse& usb, BleMouseTransport& ble)
+      : usb_(usb), ble_(ble) {}
+
+  void setSafety(bool mouse_mode, bool calibrated, bool imu_fresh) {
+    policy_.setMouseMode(mouse_mode);
+    policy_.setCalibrated(calibrated);
+    policy_.setImuFresh(imu_fresh);
+  }
+  void setTransportReadiness(bool usb_ready, bool ble_secure) {
+    policy_.setTransportReadiness(usb_ready, ble_secure);
+  }
+  bool requestArm() { return policy_.requestArm(); }
+  void forceLock(MouseLockReason reason, bool release_even_if_locked = false) {
+    policy_.forceLock(reason, release_even_if_locked);
+  }
+  void noteAuthenticationFailure() { policy_.noteAuthenticationFailure(); }
+  bool armed() const { return policy_.armed(); }
+  bool canReport() const { return policy_.canReport(); }
+  MouseTransport selectedTransport() const {
+    return policy_.selectedTransport();
+  }
+  bool takeReleaseRequest(MouseLockReason& reason) {
+    return policy_.takeReleaseRequest(reason);
+  }
+
+  void releaseAll() {
+    usb_.release(MOUSE_LEFT);
+    usb_.release(MOUSE_RIGHT);
+    usb_.release(MOUSE_MIDDLE);
+    ble_.releaseAll();
+  }
+
+  bool move(int8_t x, int8_t y, uint32_t now_ms) {
+    const auto report = policy_.routeMotion(x, y, now_ms);
+    if (!report.ready) {
+      return true;
+    }
+    if (report.transport == MouseTransport::kUsb) {
+      usb_.move(report.x, report.y);
+      return true;
+    }
+    if (report.transport == MouseTransport::kBle &&
+        ble_.sendMotion(report.x, report.y)) {
+      return true;
+    }
+    policy_.noteReportFailure();
+    return false;
+  }
+
+  bool click(uint8_t button) {
+    if (!policy_.canReport()) {
+      return false;
+    }
+    if (policy_.selectedTransport() == MouseTransport::kUsb) {
+      usb_.click(button);
+      return true;
+    }
+    if (policy_.selectedTransport() == MouseTransport::kBle &&
+        ble_.click(button)) {
+      return true;
+    }
+    policy_.noteReportFailure();
+    return false;
+  }
+
+ private:
+  USBHIDMouse& usb_;
+  BleMouseTransport& ble_;
+  MouseOutputPolicy policy_;
+};
 
 /// High-rate diagnostic stages used to test whether a firmly mounted BMI270
 /// can distinguish deliberate blinks from stillness and ordinary head motion.
@@ -66,11 +148,13 @@ enum class ImuProbeStage : uint8_t {
 
 // Long-lived device services. USB interfaces are registered before USB.begin()
 // so CDC diagnostics and HID mouse enumerate as one native TinyUSB composite.
-USBHIDMouse mouse;
+USBHIDMouse usb_mouse;
 USBCDC usb_cdc;
 // All diagnostics go through the mux: byte-identical USB CDC output plus an
 // optional read-only TCP mirror for cable-free capture (telemetry_mux.h).
 TelemetryMux diagnostics(usb_cdc);
+BleMouseTransport ble_mouse;
+MouseOutputRouter mouse_output(usb_mouse, ble_mouse);
 StickS3IrProbe ir_probe;
 BlinkFeasibilityProtocol feasibility;
 MotionController motion(MotionConfig{
@@ -92,14 +176,14 @@ ImuBlinkDetector runtime_imu_blink_detector;
 AppMode mode = AppMode::kIrProbe;
 bool ir_powered = false;
 bool ir_hold_latched = false;
-bool mouse_armed = false;
-bool mouse_hold_latched = false;
+DeliberateHoldGate mouse_hold_gate;
 bool motion_hold_latched = false;
 bool motion_calibrated = false;
 bool feasibility_result_logged = false;
 bool imu_blink_validated = false;
 uint32_t calibration_started_ms = 0;
 uint32_t last_imu_timestamp_us = 0;
+uint32_t last_imu_sample_ms = 0;
 uint32_t last_screen_ms = 0;
 uint32_t last_ir_log_ms = 0;
 uint32_t last_status_log_ms = 0;
@@ -109,6 +193,15 @@ uint32_t imu_still_sequences = 0;
 uint32_t imu_blink_sequences = 0;
 uint32_t imu_head_sequences = 0;
 uint32_t imu_free_sequences = 0;
+std::atomic<bool> usb_suspended{false};
+bool coex_window_started_this_arm = false;
+bool coex_window_active = false;
+uint32_t coex_window_started_ms = 0;
+uint32_t coex_samples = 0;
+uint32_t coex_reports_started = 0;
+uint32_t coex_failures_started = 0;
+uint32_t coex_last_imu_us = 0;
+uint32_t coex_max_gap_us = 0;
 Vec3 gyro_dps{};
 Vec3 gyro_bias{};
 Vec3 accel_g{};
@@ -124,6 +217,7 @@ constexpr uint32_t kImuHeadCaptureMs = 12000;
 // Free-run capture is bounded so a forgotten session cannot stream forever.
 constexpr uint32_t kImuFreeRunCaptureMs = 90000;
 constexpr uint32_t kBlueHoldMs = 2000;
+constexpr uint32_t kRepairHoldMs = 5000;
 
 #ifndef COLIBRINO_BUILD_ID
 #define COLIBRINO_BUILD_ID "unknown"
@@ -148,6 +242,227 @@ const char* modeName(AppMode value) {
       return "MOUSE";
   }
   return "UNKNOWN";
+}
+
+const char* transportName(MouseTransport transport) {
+  switch (transport) {
+    case MouseTransport::kNone:
+      return "NONE";
+    case MouseTransport::kUsb:
+      return "USB";
+    case MouseTransport::kBle:
+      return "BLE";
+  }
+  return "NONE";
+}
+
+const char* lockReasonName(MouseLockReason reason) {
+  switch (reason) {
+    case MouseLockReason::kNone:
+      return "NONE";
+    case MouseLockReason::kPhysical:
+      return "PHYSICAL";
+    case MouseLockReason::kModeExit:
+      return "MODE_EXIT";
+    case MouseLockReason::kOta:
+      return "OTA";
+    case MouseLockReason::kTransportTopology:
+      return "TRANSPORT_TOPOLOGY";
+    case MouseLockReason::kAdvertisingFailure:
+      return "ADVERTISING_FAILURE";
+    case MouseLockReason::kAuthentication:
+      return "AUTHENTICATION";
+    case MouseLockReason::kReportFailure:
+      return "REPORT_FAILURE";
+    case MouseLockReason::kImuTimeout:
+      return "IMU_TIMEOUT";
+    case MouseLockReason::kInvalidTiming:
+      return "INVALID_TIMING";
+  }
+  return "UNKNOWN";
+}
+
+uint32_t freeInternalHeap() {
+  return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+uint32_t largestInternalHeapBlock() {
+  return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                          MALLOC_CAP_8BIT);
+}
+
+void logHeap(const char* stage) {
+  diagnostics.printf("EVENT,BLE_HEAP,%s,free=%lu,largest=%lu\n", stage,
+                     static_cast<unsigned long>(freeInternalHeap()),
+                     static_cast<unsigned long>(largestInternalHeapBlock()));
+}
+
+void settleMouseOutputLock() {
+  MouseLockReason reason;
+  if (!mouse_output.takeReleaseRequest(reason)) {
+    return;
+  }
+  // The policy has already cleared armed state and pending BLE motion. Release
+  // both transports before resetting producer state; no failover can preserve
+  // an armed session or a partial click sequence.
+  mouse_output.releaseAll();
+  motion.reset();
+  runtime_blink_detector.reset();
+  runtime_imu_blink_detector.reset();
+  diagnostics.printf("EVENT,MOUSE_OUTPUT,LOCKED,reason=%s\n",
+                     lockReasonName(reason));
+  last_screen_ms = 0;
+}
+
+void forceMouseLock(MouseLockReason reason,
+                    bool release_even_if_locked = false) {
+  mouse_output.forceLock(reason, release_even_if_locked);
+  settleMouseOutputLock();
+}
+
+bool armMouseOutput() {
+  if (!mouse_output.requestArm()) {
+    return false;
+  }
+  motion.reset();
+  runtime_blink_detector.reset();
+  runtime_imu_blink_detector.reset();
+  coex_window_started_this_arm = false;
+  coex_window_active = false;
+  diagnostics.printf("EVENT,MOUSE_OUTPUT,ARMED,hid=%s\n",
+                     transportName(mouse_output.selectedTransport()));
+  last_screen_ms = 0;
+  return true;
+}
+
+void onUsbEvent(void*, esp_event_base_t, int32_t event_id, void*) {
+  if (event_id == ARDUINO_USB_STOPPED_EVENT ||
+      event_id == ARDUINO_USB_SUSPEND_EVENT) {
+    usb_suspended.store(true);
+  } else if (event_id == ARDUINO_USB_STARTED_EVENT ||
+             event_id == ARDUINO_USB_RESUME_EVENT) {
+    usb_suspended.store(false);
+  }
+}
+
+bool imuFresh(uint32_t now_ms) {
+  return motion_calibrated && last_imu_sample_ms != 0 &&
+         now_ms - last_imu_sample_ms <= 200;
+}
+
+void logBleEvents(uint32_t events, uint32_t now_ms) {
+  if (events & kBleEventInitialized) {
+    diagnostics.printf("EVENT,BLE,INITIALIZED,bonded=%u\n",
+                       ble_mouse.bonded() ? 1u : 0u);
+    logHeap("INITIALIZED");
+  }
+  if (events & kBleEventAdvertisingStarted) {
+    diagnostics.printf("EVENT,BLE,ADVERTISING,%s,seconds=%lu\n",
+                       BleMouseTransport::stateName(ble_mouse.state()),
+                       static_cast<unsigned long>(
+                           ble_mouse.windowRemainingSeconds(now_ms)));
+    logHeap("ADVERTISING");
+  }
+  if (events & kBleEventAdvertisingTimeout) {
+    diagnostics.println("EVENT,BLE,ADVERTISING_STOPPED");
+  }
+  if (events & kBleEventConnected) {
+    diagnostics.println("EVENT,BLE,CONNECTED,output=LOCKED");
+  }
+  if (events & kBleEventSecure) {
+    diagnostics.printf("EVENT,BLE,SECURE,bonded=%u,output=LOCKED\n",
+                       ble_mouse.bonded() ? 1u : 0u);
+    logHeap("SECURE");
+  }
+  if (events & kBleEventDisconnected) {
+    diagnostics.printf("EVENT,BLE,DISCONNECTED,reason=%d\n",
+                       ble_mouse.lastDisconnectReason());
+    logHeap("DISCONNECTED");
+  }
+  if (events & kBleEventAuthenticationFailure) {
+    diagnostics.println("EVENT,BLE,AUTHENTICATION_FAILED");
+  }
+  if (events & kBleEventAdvertisingFailure) {
+    diagnostics.println("EVENT,BLE,ADVERTISING_FAILED");
+  }
+  if (events & kBleEventReportFailure) {
+    diagnostics.printf("EVENT,BLE,REPORT_FAILED,total=%lu\n",
+                       static_cast<unsigned long>(ble_mouse.reportFailures()));
+  }
+  if (events & kBleEventBondCleared) {
+    diagnostics.println("EVENT,BLE,BOND_CLEARED");
+  }
+}
+
+void updateMouseOutputState(uint32_t now_ms) {
+  ble_mouse.service(now_ms);
+  const uint32_t events = ble_mouse.takeEvents();
+  if (events & kBleEventAuthenticationFailure) {
+    mouse_output.noteAuthenticationFailure();
+  }
+  if (events & kBleEventAdvertisingFailure) {
+    mouse_output.forceLock(MouseLockReason::kAdvertisingFailure, true);
+  }
+  mouse_output.setSafety(mode == AppMode::kMouse, motion_calibrated,
+                         imuFresh(now_ms));
+  const bool usb_ready = static_cast<bool>(USB) && !usb_suspended.load();
+  const MouseTransport previous_transport =
+      mouse_output.selectedTransport();
+  mouse_output.setTransportReadiness(usb_ready, ble_mouse.secure());
+  if (previous_transport != mouse_output.selectedTransport() &&
+      M5.BtnA.isPressed()) {
+    mouse_hold_gate.blockUntilRelease();
+  }
+  settleMouseOutputLock();
+  logBleEvents(events, now_ms);
+}
+
+void finishCoexWindow(uint32_t now_ms, const char* reason) {
+  if (!coex_window_active) {
+    return;
+  }
+  coex_window_active = false;
+  diagnostics.printf(
+      "EVENT,COEX_IMU,END,elapsed=%lu,samples=%lu,reports=%lu,failures=%lu,max_gap_us=%lu,reason=%s\n",
+      static_cast<unsigned long>(now_ms - coex_window_started_ms),
+      static_cast<unsigned long>(coex_samples),
+      static_cast<unsigned long>(ble_mouse.successfulReports() -
+                                 coex_reports_started),
+      static_cast<unsigned long>(ble_mouse.reportFailures() -
+                                 coex_failures_started),
+      static_cast<unsigned long>(coex_max_gap_us), reason);
+  logHeap("COEX_END");
+}
+
+void updateCoexWindow(uint32_t now_ms) {
+  const bool eligible = diagnostics.clientConnected() &&
+                        mouse_output.armed() && ble_mouse.secure() &&
+                        mouse_output.selectedTransport() == MouseTransport::kBle;
+  if (coex_window_active) {
+    if (!eligible) {
+      finishCoexWindow(now_ms, "CONDITION_LOST");
+    } else if (now_ms - coex_window_started_ms >= 30000) {
+      finishCoexWindow(now_ms, "COMPLETE");
+    }
+    return;
+  }
+  if (!eligible || coex_window_started_this_arm) {
+    return;
+  }
+
+  coex_window_started_this_arm = true;
+  coex_window_active = true;
+  coex_window_started_ms = now_ms;
+  coex_samples = 0;
+  coex_reports_started = ble_mouse.successfulReports();
+  coex_failures_started = ble_mouse.reportFailures();
+  coex_last_imu_us = 0;
+  coex_max_gap_us = 0;
+  diagnostics.println(
+      "EVENT,COEX_IMU,START,cap_ms=30000,reports=0,failures=0");
+  diagnostics.println(
+      "CSV: COEX_IMU,ms,usec,gx_dps,gy_dps,gz_dps,sample,reports,failures");
+  logHeap("COEX_START");
 }
 
 const char* imuProbeStageName(ImuProbeStage value) {
@@ -383,19 +698,41 @@ void drawMotionScreen(uint32_t now_ms) {
   }
 }
 
-void drawMouseScreen() {
+void drawMouseScreen(uint32_t now_ms) {
   drawHeader();
   M5.Display.setCursor(4, 31);
-  M5.Display.setTextColor(mouse_armed ? TFT_GREEN : TFT_YELLOW, TFT_BLACK);
-  M5.Display.printf("OUTPUT: %s\n", mouse_armed ? "ARMED" : "LOCKED");
+  M5.Display.setTextColor(mouse_output.armed() ? TFT_GREEN : TFT_YELLOW,
+                          TFT_BLACK);
+  M5.Display.printf("OUTPUT: %s\n",
+                    mouse_output.armed() ? "ARMED" : "LOCKED");
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.printf("motion: %s\n", motion_calibrated ? "READY" : "CALIBRATING");
+  M5.Display.printf("HID: %s\n",
+                    transportName(mouse_output.selectedTransport()));
+  const BleMouseState ble_state = ble_mouse.state();
+  if (ble_state == BleMouseState::kPairing ||
+      ble_state == BleMouseState::kReconnect) {
+    M5.Display.printf("BLE: %s %lus\n",
+                      ble_state == BleMouseState::kPairing ? "PAIR" : "RECONNECT",
+                      static_cast<unsigned long>(
+                          ble_mouse.windowRemainingSeconds(now_ms)));
+  } else {
+    M5.Display.printf("BLE: %s\n", BleMouseTransport::stateName(ble_state));
+  }
   const bool optical_click_ready = feasibility.result().passes && ir_powered;
   M5.Display.printf("blink click: %s\n",
                     imu_blink_validated
                         ? "IMU READY"
                         : (optical_click_ready ? "IR READY" : "DISABLED"));
-  M5.Display.println("hold BLUE 2s: arm/lock");
+  if (mouse_output.selectedTransport() != MouseTransport::kNone) {
+    M5.Display.println("hold BLUE 2s: arm/lock");
+  } else if (ble_state == BleMouseState::kReconnect ||
+             ble_mouse.repairRequired()) {
+    M5.Display.println("hold BLUE 5s: forget+pair");
+  } else if (ble_state != BleMouseState::kPairing &&
+             ble_state != BleMouseState::kAuthenticating) {
+    M5.Display.println("hold BLUE 2s: BLE window");
+  }
   M5.Display.println("tap BLUE when locked: IR");
 }
 
@@ -412,7 +749,7 @@ void updateDisplay(uint32_t now_ms) {
       drawMotionScreen(now_ms);
       break;
     case AppMode::kMouse:
-      drawMouseScreen();
+      drawMouseScreen(now_ms);
       break;
   }
 }
@@ -433,7 +770,10 @@ void cycleMode() {
     }
     imu_probe_stage = ImuProbeStage::kIdle;
     mode = AppMode::kMouse;
-  } else if (!mouse_armed) {
+    mouse_hold_gate.blockUntilRelease();
+  } else if (!mouse_output.armed()) {
+    forceMouseLock(MouseLockReason::kModeExit, true);
+    ble_mouse.cancelWindow();
     mode = AppMode::kIrProbe;
   }
   last_screen_ms = 0;
@@ -493,11 +833,9 @@ void drawOtaState(const char* title, const char* detail, uint16_t color) {
 void lockForOta() {
   // ArduinoOTA.handle() may own the loop for the entire transfer. Remove every
   // hardware and host side effect before entering that blocking interval.
-  mouse_armed = false;
-  mouse.release(MOUSE_LEFT);
-  mouse.release(MOUSE_RIGHT);
-  mouse.release(MOUSE_MIDDLE);
-  motion.reset();
+  forceMouseLock(MouseLockReason::kOta, true);
+  finishCoexWindow(millis(), "OTA");
+  ble_mouse.stopForOta();
   imu_blink_validated = false;
   imu_probe_stage = ImuProbeStage::kIdle;
   probe_imu_blink_detector.reset();
@@ -508,6 +846,7 @@ void lockForOta() {
     M5.Power.setExtOutput(false);
   }
   mode = AppMode::kMotionMonitor;
+  mouse_output.setSafety(false, motion_calibrated, false);
 }
 
 void beginOtaService() {
@@ -629,12 +968,15 @@ void updateIr(uint32_t now_ms) {
     }
   }
 
-  if (!imu_blink_validated && mode == AppMode::kMouse && mouse_armed &&
+  if (!imu_blink_validated && mode == AppMode::kMouse &&
+      mouse_output.armed() &&
       sample.valid &&
       runtime_blink_detector.configured() &&
       runtime_blink_detector.update(now_ms, sample.value)) {
-    mouse.click(MOUSE_LEFT);
-    diagnostics.println("EVENT,BLINK_CLICK");
+    if (mouse_output.click(MOUSE_LEFT)) {
+      diagnostics.println("EVENT,BLINK_CLICK");
+    }
+    settleMouseOutputLock();
   }
 }
 
@@ -646,6 +988,27 @@ void updateImu(uint32_t now_ms) {
   const auto data = M5.Imu.getImuData();
   gyro_dps = {data.gyro.x, data.gyro.y, data.gyro.z};
   accel_g = {data.accel.x, data.accel.y, data.accel.z};
+  last_imu_sample_ms = now_ms;
+
+  if (coex_window_active) {
+    ++coex_samples;
+    if (coex_last_imu_us != 0) {
+      const uint32_t gap_us = data.usec - coex_last_imu_us;
+      if (gap_us > coex_max_gap_us) {
+        coex_max_gap_us = gap_us;
+      }
+    }
+    coex_last_imu_us = data.usec;
+    diagnostics.printf(
+        "COEX_IMU,%lu,%lu,%.4f,%.4f,%.4f,%lu,%lu,%lu\n",
+        static_cast<unsigned long>(now_ms),
+        static_cast<unsigned long>(data.usec), gyro_dps.x, gyro_dps.y,
+        gyro_dps.z, static_cast<unsigned long>(coex_samples),
+        static_cast<unsigned long>(ble_mouse.successfulReports() -
+                                   coex_reports_started),
+        static_cast<unsigned long>(ble_mouse.reportFailures() -
+                                   coex_failures_started));
+  }
 
   updateImuProbeClock(now_ms);
   if (mode == AppMode::kMotionMonitor && imuProbeActive()) {
@@ -705,17 +1068,25 @@ void updateImu(uint32_t now_ms) {
     last_imu_timestamp_us = data.usec;
     return;
   }
-  const float dt =
-      static_cast<float>(data.usec - last_imu_timestamp_us) / 1000000.0f;
+  const uint32_t dt_us = data.usec - last_imu_timestamp_us;
   last_imu_timestamp_us = data.usec;
-  const PointerDelta delta = motion.update(gyro_dps, dt);
-  if (mode == AppMode::kMouse && mouse_armed && (delta.x || delta.y)) {
-    mouse.move(delta.x, delta.y);
+  if (dt_us == 0 || dt_us > 200000) {
+    forceMouseLock(MouseLockReason::kInvalidTiming);
+    return;
   }
-  if (imu_blink_validated && mode == AppMode::kMouse && mouse_armed &&
+  const float dt = static_cast<float>(dt_us) / 1000000.0f;
+  const PointerDelta delta = motion.update(gyro_dps, dt);
+  if (mode == AppMode::kMouse && mouse_output.armed()) {
+    mouse_output.move(delta.x, delta.y, now_ms);
+    settleMouseOutputLock();
+  }
+  if (imu_blink_validated && mode == AppMode::kMouse &&
+      mouse_output.armed() &&
       runtime_imu_blink_detector.update(now_ms, gyro_dps)) {
-    mouse.click(MOUSE_LEFT);
-    diagnostics.println("EVENT,IMU_BLINK_SEQUENCE_CLICK");
+    if (mouse_output.click(MOUSE_LEFT)) {
+      diagnostics.println("EVENT,IMU_BLINK_SEQUENCE_CLICK");
+    }
+    settleMouseOutputLock();
   }
 }
 
@@ -726,18 +1097,29 @@ void logStatus(uint32_t now_ms) {
     return;
   }
   last_status_log_ms = now_ms;
+  const long battery_level = static_cast<long>(M5.Power.getBatteryLevel());
+  if (battery_level >= 0 && battery_level <= 100) {
+    ble_mouse.setBatteryLevel(static_cast<uint8_t>(battery_level));
+  }
   diagnostics.printf(
-      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f,build=%s,batt=%ld,tele=%u\n",
+      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f,build=%s,batt=%ld,tele=%u,ble=%s,hid=%s,bonded=%u,repair=%u,ble_reports=%lu,ble_failures=%lu,heap=%lu,heap_largest=%lu\n",
       static_cast<unsigned long>(now_ms),
       M5.getBoard() == m5::board_t::board_M5StickS3 ? "StickS3" : "UNKNOWN",
-      modeName(mode), mouse_armed, M5.Imu.isEnabled(), motion_calibrated,
+      modeName(mode), mouse_output.armed(), M5.Imu.isEnabled(), motion_calibrated,
       imu_blink_validated, ir_powered, otaStateName(),
       colibrino::feasibilityStageName(feasibility.stage()),
       imuProbeStageName(imu_probe_stage),
       gyro_dps.x, gyro_dps.y, gyro_dps.z,
       COLIBRINO_BUILD_ID,
-      static_cast<long>(M5.Power.getBatteryLevel()),
-      diagnostics.clientConnected() ? 1u : 0u);
+      battery_level, diagnostics.clientConnected() ? 1u : 0u,
+      BleMouseTransport::stateName(ble_mouse.state()),
+      transportName(mouse_output.selectedTransport()),
+      ble_mouse.bonded() ? 1u : 0u,
+      ble_mouse.repairRequired() ? 1u : 0u,
+      static_cast<unsigned long>(ble_mouse.successfulReports()),
+      static_cast<unsigned long>(ble_mouse.reportFailures()),
+      static_cast<unsigned long>(freeInternalHeap()),
+      static_cast<unsigned long>(largestInternalHeapBlock()));
 }
 
 void handleButtons(uint32_t now_ms) {
@@ -802,19 +1184,48 @@ void handleButtons(uint32_t now_ms) {
   }
 
   if (mode == AppMode::kMouse) {
-    if (M5.BtnA.pressedFor(kBlueHoldMs) && !mouse_hold_latched &&
-        motion_calibrated) {
-      mouse_hold_latched = true;
-      mouse_armed = !mouse_armed;
-      motion.reset();
-      runtime_imu_blink_detector.reset();
-      diagnostics.printf("EVENT,MOUSE_OUTPUT,%s\n",
-                         mouse_armed ? "ARMED" : "LOCKED");
+    const bool blue_pressed = M5.BtnA.isPressed();
+    const bool hold_was_blocked = mouse_hold_gate.blocked();
+    mouse_hold_gate.observe(blue_pressed);
+    const BleMouseState ble_state = ble_mouse.state();
+
+    // A hold begun while pairing or authenticating must be fully released; a
+    // secure transition can never reinterpret it as an arming gesture.
+    if (blue_pressed && (ble_state == BleMouseState::kPairing ||
+                         ble_state == BleMouseState::kAuthenticating)) {
+      mouse_hold_gate.blockUntilRelease();
+    } else if (mouse_output.armed() &&
+               mouse_hold_gate.trigger(
+                   blue_pressed, M5.BtnA.pressedFor(kBlueHoldMs))) {
+      forceMouseLock(MouseLockReason::kPhysical);
+    } else if (mouse_output.selectedTransport() != MouseTransport::kNone &&
+               mouse_hold_gate.trigger(
+                   blue_pressed, M5.BtnA.pressedFor(kBlueHoldMs))) {
+      armMouseOutput();
+    } else if ((ble_state == BleMouseState::kReconnect ||
+                ble_mouse.repairRequired()) &&
+               mouse_output.selectedTransport() == MouseTransport::kNone &&
+               mouse_hold_gate.trigger(
+                   blue_pressed, M5.BtnA.pressedFor(kRepairHoldMs))) {
+      forceMouseLock(MouseLockReason::kPhysical, true);
+      if (!ble_mouse.forgetBondAndPair(now_ms)) {
+        forceMouseLock(MouseLockReason::kAdvertisingFailure, true);
+      }
+    } else if (mouse_output.selectedTransport() == MouseTransport::kNone &&
+               (ble_state == BleMouseState::kIdle ||
+                ble_state == BleMouseState::kFault ||
+                ble_state == BleMouseState::kDisabled) &&
+               !ble_mouse.repairRequired() &&
+               mouse_hold_gate.trigger(
+                   blue_pressed, M5.BtnA.pressedFor(kBlueHoldMs))) {
+      forceMouseLock(MouseLockReason::kPhysical, true);
+      if (!ble_mouse.startWindow(now_ms)) {
+        forceMouseLock(MouseLockReason::kAdvertisingFailure, true);
+      }
     }
-    if (!M5.BtnA.isPressed()) {
-      mouse_hold_latched = false;
-    }
-    if (blue_clicked && !mouse_armed && !mouse_hold_latched) {
+
+    if (blue_clicked && !mouse_output.armed() && !hold_was_blocked &&
+        !mouse_hold_gate.blocked()) {
       cycleMode();
     }
   }
@@ -849,16 +1260,27 @@ void setup() {
   M5.Display.setBrightness(80);
 
   diagnostics.begin(115200);
-  mouse.begin();
+  usb_mouse.begin();
   // Interface descriptors must be configured before starting the USB device.
   USB.productName("Colibrino StickS3 Prototype");
   USB.manufacturerName("Colibrino");
+  USB.onEvent(onUsbEvent);
   USB.begin();
 
   calibration_started_ms = millis();
   gyro_calibrator.reset();
   diagnostics.println("Colibrino StickS3 prototype");
   diagnostics.printf("EVENT,BUILD,%s\n", COLIBRINO_BUILD_ID);
+  logHeap("BEFORE_INIT");
+  const long initial_battery = static_cast<long>(M5.Power.getBatteryLevel());
+  const uint8_t ble_battery =
+      initial_battery >= 0 && initial_battery <= 100
+          ? static_cast<uint8_t>(initial_battery)
+          : 0;
+  if (!ble_mouse.begin(ble_battery)) {
+    mouse_output.forceLock(MouseLockReason::kAdvertisingFailure, true);
+  }
+  updateMouseOutputState(millis());
   diagnostics.println(
       "CSV: IR,ms,valid,symbols,active_us,total_us,ratio,stage");
   diagnostics.printf("IMU type: %d (BMI270 expected: %d)\n",
@@ -883,9 +1305,13 @@ void loop() {
   // After the OTA early-return on purpose: ArduinoOTA.handle() runs a whole
   // transfer synchronously, so no telemetry work can or should run mid-flash.
   diagnostics.service(now_ms);
+  updateMouseOutputState(now_ms);
   handleButtons(now_ms);
+  updateCoexWindow(now_ms);
   updateImu(now_ms);
   updateIr(now_ms);
+  settleMouseOutputLock();
+  updateCoexWindow(now_ms);
   logStatus(now_ms);
   updateDisplay(now_ms);
   delay(1);

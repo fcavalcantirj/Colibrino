@@ -12,6 +12,7 @@ enum class MouseLockReason : uint8_t {
   kModeExit,
   kOta,
   kTransportTopology,
+  kAdvertisingFailure,
   kAuthentication,
   kReportFailure,
   kImuTimeout,
