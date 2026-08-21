@@ -118,8 +118,12 @@ def now_ns() -> int:
 
 
 class Audio:
-    def __init__(self, enabled: bool, sink) -> None:
-        self.enabled = enabled and os.path.exists(SAY) and os.path.exists(AFPLAY)
+    def __init__(self, enabled: bool, sink, voice: bool = False) -> None:
+        # Beeps stay on by default: HB/U/C runs are timed BY them. Speech is
+        # opt-in (--voice): the serialized say queue lags the stages, so the
+        # synchronized printed banners are the primary guidance.
+        self.beep_enabled = enabled and os.path.exists(AFPLAY)
+        self.speech_enabled = enabled and voice and os.path.exists(SAY)
         self._sink = sink
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._thread = threading.Thread(target=self._worker, name="speech", daemon=True)
@@ -145,11 +149,11 @@ class Audio:
         for chunk in textwrap.wrap(text.upper(), width=60) or [""]:
             self._sink(">>> " + chunk)
         self._sink(bar)
-        if self.enabled:
+        if self.speech_enabled:
             self._queue.put(text)
 
     def beep(self) -> None:
-        if self.enabled:
+        if self.beep_enabled:
             try:
                 subprocess.Popen([AFPLAY, TINK], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
@@ -1148,7 +1152,7 @@ def run_simulate(args, plan, plan_meta) -> int:
     writer = CaptureWriter(directory)
     pane = sys.stdout.isatty() and not args.quiet
     printer = make_printer(pane)
-    audio = Audio(enabled=not args.no_audio, sink=printer)
+    audio = Audio(enabled=not args.no_audio, sink=printer, voice=getattr(args, "voice", False))
     speed = float(args.sim_speed)
     cues = CueScheduler(audio, lambda rec: state._emit_cue(rec), speed)
     state = SessionState(writer, audio, cues, plan, args.plan_session if plan else None, plan_meta, "simulate", printer)
@@ -1258,7 +1262,7 @@ def run_live(args, plan, plan_meta) -> int:
     writer = CaptureWriter(directory)
     pane = sys.stdout.isatty() and not args.quiet
     printer = make_printer(pane)
-    audio = Audio(enabled=not args.no_audio, sink=printer)
+    audio = Audio(enabled=not args.no_audio, sink=printer, voice=getattr(args, "voice", False))
     cues = CueScheduler(audio, lambda rec: state._emit_cue(rec), 1.0)
     state = SessionState(writer, audio, cues, plan, args.plan_session if plan else None, plan_meta, "live", printer)
     state.identity = redact_identity(desc)
@@ -1525,7 +1529,7 @@ def run_tcp(args, plan, plan_meta) -> int:
     writer = CaptureWriter(directory)
     pane = sys.stdout.isatty() and not args.quiet
     printer = make_printer(pane)
-    audio = Audio(enabled=not args.no_audio, sink=printer)
+    audio = Audio(enabled=not args.no_audio, sink=printer, voice=getattr(args, "voice", False))
     cues = CueScheduler(audio, lambda rec: state._emit_cue(rec), 1.0)
     state = SessionState(writer, audio, cues, plan, args.plan_session if plan else None, plan_meta, "tcp", printer)
 
@@ -1654,7 +1658,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--plan-session", default="A", help="plan session id to run (default A)")
     parser.add_argument("--port", help="disambiguate when more than one verified candidate exists (never bypasses verification)")
     parser.add_argument("--wait-for-port", action="store_true", help="poll until the verified device enumerates")
-    parser.add_argument("--no-audio", action="store_true", help="print a bell and text instead of afplay/say")
+    parser.add_argument("--no-audio", action="store_true", help="no sounds at all: no cue beeps, no speech")
+    parser.add_argument("--voice", action="store_true", help="speak instructions aloud in addition to the printed banners (off by default: speech lags the stages)")
     parser.add_argument("--no-keys", action="store_true", help="do not read keys from the terminal")
     parser.add_argument("--quiet", action="store_true", help="no live status pane")
     parser.add_argument("--verbose-status", action="store_true", help="old full-field status line instead of the operator view")
