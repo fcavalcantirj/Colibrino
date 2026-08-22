@@ -27,5 +27,17 @@ sha = _git(["rev-parse", "--short", "HEAD"]) or "unknown"
 if sha != "unknown" and _git(["status", "--porcelain"]):
     sha += "+dirty"
 
+# Build variants that extend the production environment (for example
+# `m5stack-sticks3-noble`, the BLE-less instrumentation image) carry the
+# variant suffix in the id so a greeting or STATUS line can never be mistaken
+# for the full image built from the same commit.
+_pioenv = env.get("PIOENV", "")  # noqa: F821
+try:
+    _default_env = env.GetProjectConfig().get_default_env()  # noqa: F821
+except Exception:  # pragma: no cover - very old PlatformIO cores
+    _default_env = "m5stack-sticks3"
+if _pioenv and _pioenv != _default_env:
+    sha += _pioenv[len(_default_env):] if _pioenv.startswith(_default_env + "-") else "-" + _pioenv
+
 print("COLIBRINO_BUILD_ID=%s" % sha)
 env.Append(CPPDEFINES=[("COLIBRINO_BUILD_ID", env.StringifyMacro(sha))])  # noqa: F821

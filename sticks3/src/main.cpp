@@ -7,9 +7,23 @@
 #include <M5Unified.h>
 #include <USB.h>
 #include <USBHIDMouse.h>
+#include <esp_attr.h>
+#include <esp_core_dump.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include <esp_system.h>
+#include <esp_timer.h>
+#include <esp32s3/rom/rtc.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <new>
 
 #if __has_include("colibrino_secrets.h")
 #include <ArduinoOTA.h>
@@ -21,6 +35,7 @@
 #define COLIBRINO_OTA_CONFIGURED 0
 #endif
 
+#include "colibrino/boot_health.h"
 #include "colibrino/config.h"
 #include "colibrino/imu_blink_detector.h"
 #include "colibrino/mouse_output_policy.h"
@@ -38,6 +53,9 @@ namespace {
 
 using colibrino::BlinkFeasibilityProtocol;
 using colibrino::BlinkSignalSample;
+using colibrino::BootHealthAction;
+using colibrino::BootHealthPolicy;
+using colibrino::BootResetClass;
 using colibrino::FeasibilityStage;
 using colibrino::GyroBiasCalibrator;
 using colibrino::ImuBlinkDetector;
@@ -222,6 +240,356 @@ constexpr uint32_t kRepairHoldMs = 5000;
 #ifndef COLIBRINO_BUILD_ID
 #define COLIBRINO_BUILD_ID "unknown"
 #endif
+
+#ifndef COLIBRINO_BLE_ENABLED
+// 0 builds the instrumentation-only image (env m5stack-sticks3-noble): the BLE
+// transport is linked but never brought up, so boot health, the crash
+// breadcrumbs, and the OTA confirmation path are proven on the lane first.
+#define COLIBRINO_BLE_ENABLED 1
+#endif
+
+#ifndef COLIBRINO_BOOT_CONSOLE_MS
+// Hold the boot breadcrumbs until a host console can attach. UART0 and the
+// USB-Serial/JTAG console are both reachable only until USB.begin() hands the
+// USB PHY to TinyUSB, and that hand-over survives software resets.
+#define COLIBRINO_BOOT_CONSOLE_MS 1000
+#endif
+
+// Boot-health state. RTC slow memory keeps its contents through panics,
+// watchdogs, and esp_restart(); a power-on leaves garbage, which the magic
+// word detects, and a cold reset starts a fresh attempt budget anyway.
+constexpr uint32_t kBootHealthMagic = 0xC0119B01u;
+enum BootStage : uint32_t {
+  kBootStageNone = 0,
+  kBootStageStaticInit = 1,
+  kBootStageSetupStart = 2,
+  kBootStageM5 = 3,
+  kBootStageUsb = 4,
+  kBootStageBle = 5,
+  kBootStageBleDone = 6,
+  kBootStageWifi = 7,
+  kBootStageSetupDone = 8,
+};
+enum BootAction : uint32_t {
+  kActionNone = 0,
+  kActionBudgetRollback = 1,
+  kActionDeadlineRollback = 2,
+};
+RTC_NOINIT_ATTR uint32_t rtc_boot_magic;
+RTC_NOINIT_ATTR uint32_t rtc_unhealthy_boots;
+RTC_NOINIT_ATTR uint32_t rtc_boot_stage;
+RTC_NOINIT_ATTR uint32_t rtc_previous_stage;
+RTC_NOINIT_ATTR uint32_t rtc_last_action;
+
+// Runs during static initialization, before initArduino() and setup(): a
+// crash anywhere in global construction still advances the attempt count, so
+// the next boot's breadcrumb shows it and a cable-flashed image can still
+// exhaust its budget (an OTA image additionally has the bootloader's own
+// PENDING_VERIFY fallback). esp_reset_reason() is not usable this early, so
+// setup() decides whether the count survives (crash-class reset) or restarts.
+__attribute__((constructor(101))) void bootHealthEarlyMark() {
+  if (rtc_boot_magic != kBootHealthMagic) {
+    rtc_boot_magic = kBootHealthMagic;
+    rtc_unhealthy_boots = 0;
+    rtc_boot_stage = kBootStageNone;
+    rtc_previous_stage = kBootStageNone;
+    rtc_last_action = kActionNone;
+  }
+  if (rtc_unhealthy_boots != UINT32_MAX) {
+    ++rtc_unhealthy_boots;
+  }
+  rtc_previous_stage = rtc_boot_stage;
+  rtc_boot_stage = kBootStageStaticInit;
+}
+
+BootHealthPolicy boot_health;
+// Exactly one of the confirm path (loop task) and the deadline path (timer
+// task) may touch otadata: both claim the phase with a compare-exchange. The
+// portable policy's deadline predicate is mirrored by this phase, because the
+// policy object itself is owned by the loop task.
+enum BootImagePhase : uint8_t {
+  kPhasePending = 0,
+  kPhaseConfirmed = 1,
+  kPhaseRollingBack = 2,
+};
+std::atomic<uint8_t> boot_image_phase{kPhasePending};
+esp_timer_handle_t boot_deadline_timer = nullptr;
+bool boot_deadline_armed = false;
+esp_reset_reason_t boot_reset_reason = ESP_RST_UNKNOWN;
+esp_ota_img_states_t boot_image_state = ESP_OTA_IMG_UNDEFINED;
+uint32_t boot_previous_stage = kBootStageNone;
+uint32_t boot_previous_action = kActionNone;
+// 0 = no dump in flash, 1 = dump from this build, 2 = dump from another build.
+uint8_t boot_crash_summary = 0;
+char boot_event_payload[192];
+char boot_crash_payload[400];
+bool boot_lines_seen_by_cdc = false;
+bool boot_lines_seen_by_telemetry = false;
+
+const char* resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:
+      return "POWERON";
+    case ESP_RST_EXT:
+      return "EXT";
+    case ESP_RST_SW:
+      return "SW";
+    case ESP_RST_PANIC:
+      return "PANIC";
+    case ESP_RST_INT_WDT:
+      return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+      return "TASK_WDT";
+    case ESP_RST_WDT:
+      return "WDT";
+    case ESP_RST_DEEPSLEEP:
+      return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT";
+    case ESP_RST_SDIO:
+      return "SDIO";
+    case ESP_RST_UNKNOWN:
+    default:
+      return "UNKNOWN";
+  }
+}
+
+// Only a crash-class reset means "the previous boot of this image failed".
+// Power-on, the side button, brownout, esp_restart() (the reboot that starts
+// every OTA image), and the USB-Serial/JTAG host reset (UNKNOWN on IDF 4.4)
+// restart the attempt budget, so developer resets or a flat battery can never
+// talk the device into rolling back a working image.
+bool isCrashClassReset(esp_reset_reason_t reason) {
+  return reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
+         reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT;
+}
+
+const char* bootActionName(uint32_t action) {
+  switch (action) {
+    case kActionBudgetRollback:
+      return "BUDGET_ROLLBACK";
+    case kActionDeadlineRollback:
+      return "DEADLINE_ROLLBACK";
+    case kActionNone:
+    default:
+      return "NONE";
+  }
+}
+
+const char* otaImageStateName(esp_ota_img_states_t state) {
+  switch (state) {
+    case ESP_OTA_IMG_NEW:
+      return "NEW";
+    case ESP_OTA_IMG_PENDING_VERIFY:
+      return "PENDING_VERIFY";
+    case ESP_OTA_IMG_VALID:
+      return "VALID";
+    case ESP_OTA_IMG_INVALID:
+      return "INVALID";
+    case ESP_OTA_IMG_ABORTED:
+      return "ABORTED";
+    case ESP_OTA_IMG_UNDEFINED:
+    default:
+      return "UNDEFINED";
+  }
+}
+
+esp_ota_img_states_t readRunningImageState() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  if (running == nullptr ||
+      esp_ota_get_state_partition(running, &state) != ESP_OK) {
+    return ESP_OTA_IMG_UNDEFINED;
+  }
+  return state;
+}
+
+const char* runningSlotLabel() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  return running == nullptr ? "unknown" : running->label;
+}
+
+void setBootStage(uint32_t stage) { rtc_boot_stage = stage; }
+
+// Formats the previous crash from the flash core dump when one is present.
+// Returns 0 (none), 1 (dump made by this build), 2 (dump made by another
+// build, e.g. the image that was rolled back). The dump is never erased here:
+// it stays available for host-side decoding against the retained ELF. The
+// summary is heap-allocated to spare the loop stack.
+uint8_t formatLastCrash(char* out, size_t capacity) {
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+  if (esp_core_dump_image_check() != ESP_OK) {
+    return 0;
+  }
+  std::unique_ptr<esp_core_dump_summary_t> summary(
+      new (std::nothrow) esp_core_dump_summary_t());
+  if (!summary || esp_core_dump_get_summary(summary.get()) != ESP_OK) {
+    return 0;
+  }
+  // The task name comes from a crashed TCB: keep the record single-line and
+  // comma-free whatever the dump contains.
+  char task[sizeof summary->exc_task + 1];
+  for (size_t index = 0; index < sizeof summary->exc_task; ++index) {
+    const char c = summary->exc_task[index];
+    if (c == '\0') {
+      task[index] = '\0';
+      break;
+    }
+    task[index] = (c < 0x20 || c > 0x7e || c == ',') ? '_' : c;
+  }
+  task[sizeof summary->exc_task] = '\0';
+  char sha[sizeof summary->app_elf_sha256 + 1];
+  memcpy(sha, summary->app_elf_sha256, sizeof summary->app_elf_sha256);
+  sha[sizeof summary->app_elf_sha256] = '\0';
+  char running_sha[sizeof sha];
+  running_sha[0] = '\0';
+  esp_ota_get_app_elf_sha256(running_sha, sizeof running_sha);
+  const bool stale = strncmp(sha, running_sha, sizeof sha - 1) != 0;
+  int length = snprintf(
+      out, capacity,
+      "task=%s,pc=0x%08lx,cause=%lu,vaddr=0x%08lx,sha=%s,stale=%u,depth=%lu,corrupted=%u,bt=",
+      task, static_cast<unsigned long>(summary->exc_pc),
+      static_cast<unsigned long>(summary->ex_info.exc_cause),
+      static_cast<unsigned long>(summary->ex_info.exc_vaddr), sha,
+      stale ? 1u : 0u, static_cast<unsigned long>(summary->exc_bt_info.depth),
+      summary->exc_bt_info.corrupted ? 1u : 0u);
+  if (length < 0) {
+    return 0;
+  }
+  const uint32_t depth = std::min<uint32_t>(summary->exc_bt_info.depth, 16);
+  for (uint32_t index = 0;
+       index < depth && static_cast<size_t>(length) < capacity; ++index) {
+    const int written = snprintf(
+        out + length, capacity - static_cast<size_t>(length), "%s0x%08lx",
+        index == 0 ? "" : ";",
+        static_cast<unsigned long>(summary->exc_bt_info.bt[index]));
+    if (written < 0) {
+      break;
+    }
+    length += written;
+  }
+  return stale ? 2 : 1;
+#else
+  (void)out;
+  (void)capacity;
+  return 0;
+#endif
+}
+
+// Boot lines through the mux. Replays (on a later CDC or telemetry attach)
+// carry their own event names so a host parser never counts them as reboots.
+void emitBootLines(bool replay) {
+  diagnostics.printf("EVENT,%s,%s\n", replay ? "BOOT_REPLAY" : "BOOT",
+                     boot_event_payload);
+  if (boot_crash_summary != 0) {
+    diagnostics.printf("EVENT,%s,%s\n",
+                       replay ? "LAST_CRASH_REPLAY" : "LAST_CRASH",
+                       boot_crash_payload);
+  }
+}
+
+// The CDC drops bytes until a host opens it and the telemetry ring starts
+// clean for every client, so the boot lines are replayed once per attach.
+void reemitBootLinesOnAttach() {
+  const bool cdc_attached = static_cast<bool>(usb_cdc);
+  const bool telemetry_attached = diagnostics.clientConnected();
+  if ((cdc_attached && !boot_lines_seen_by_cdc) ||
+      (telemetry_attached && !boot_lines_seen_by_telemetry)) {
+    emitBootLines(true);
+  }
+  boot_lines_seen_by_cdc = cdc_attached;
+  boot_lines_seen_by_telemetry = telemetry_attached;
+}
+
+void confirmRunningImage(const char* reason) {
+  // Stop the deadline before the phase transition: once stopped, the timer
+  // callback can no longer start, and a callback already running loses or
+  // wins the compare-exchange below — never both paths.
+  if (boot_deadline_timer != nullptr) {
+    esp_timer_stop(boot_deadline_timer);
+  }
+  uint8_t expected = kPhasePending;
+  if (!boot_image_phase.compare_exchange_strong(expected, kPhaseConfirmed)) {
+    return;
+  }
+  const esp_ota_img_states_t before = boot_image_state;
+  const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+  boot_health.noteImageConfirmed();
+  rtc_unhealthy_boots = 0;
+  boot_image_state = readRunningImageState();
+  diagnostics.printf(
+      "EVENT,OTA_IMAGE,CONFIRMED,reason=%s,state_before=%s,state=%s,rc=%d\n",
+      reason, otaImageStateName(before), otaImageStateName(boot_image_state),
+      static_cast<int>(result));
+}
+
+// Boot-time budget rollback (loop task, before any console but the early
+// ones). Returns only when no rollback target exists or the request failed;
+// the RTC action stamp lets the image that boots next say why it is running.
+void requestImageRollback() {
+  const bool possible = esp_ota_check_rollback_is_possible();
+  printf("EVENT,BOOT,ROLLBACK,reason=ATTEMPT_BUDGET,possible=%u\n",
+         possible ? 1u : 0u);
+  fflush(stdout);
+  if (!possible) {
+    return;
+  }
+  rtc_last_action = kActionBudgetRollback;
+  delay(100);  // let the console drain before the reset
+  const esp_err_t result = esp_ota_mark_app_invalid_rollback_and_reboot();
+  rtc_last_action = kActionNone;
+  printf("EVENT,BOOT,ROLLBACK_FAILED,rc=%d\n", static_cast<int>(result));
+  fflush(stdout);
+}
+
+// Deadline rollback runs on its own task: the esp_timer task is small and
+// shared, and esp_ota_mark_app_invalid_rollback_and_reboot() verifies the
+// other slot (a multi-hundred-millisecond SHA pass) before restarting.
+void bootRollbackTask(void*) {
+  rtc_last_action = kActionDeadlineRollback;
+  printf("EVENT,BOOT,DEADLINE,rollback=requested,stage=%lu\n",
+         static_cast<unsigned long>(rtc_boot_stage));
+  fflush(stdout);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  const esp_err_t result = esp_ota_mark_app_invalid_rollback_and_reboot();
+  rtc_last_action = kActionNone;
+  printf("EVENT,BOOT,DEADLINE,rollback=failed,rc=%d\n",
+         static_cast<int>(result));
+  fflush(stdout);
+  vTaskDelete(nullptr);
+}
+
+// esp_timer task context: claims the phase and hands the work over. Covers
+// the hang case (an init call that never returns), which no watchdog in this
+// configuration would catch.
+void bootDeadlineCallback(void*) {
+  uint8_t expected = kPhasePending;
+  if (!boot_image_phase.compare_exchange_strong(expected, kPhaseRollingBack)) {
+    return;
+  }
+  xTaskCreate(bootRollbackTask, "boot_rollback", 6144, nullptr, 5, nullptr);
+}
+
+void startBootDeadline() {
+  esp_timer_create_args_t args{};
+  args.callback = bootDeadlineCallback;
+  args.arg = nullptr;
+  args.dispatch_method = ESP_TIMER_TASK;
+  args.name = "boot_deadline";
+  args.skip_unhandled_events = false;
+  esp_err_t result = esp_timer_create(&args, &boot_deadline_timer);
+  if (result == ESP_OK) {
+    result = esp_timer_start_once(
+        boot_deadline_timer,
+        static_cast<uint64_t>(boot_health.config().deadline_ms) * 1000ULL);
+  }
+  boot_deadline_armed = result == ESP_OK;
+  printf("EVENT,BOOT,DEADLINE,armed=%u,ms=%lu,rc=%d\n",
+         boot_deadline_armed ? 1u : 0u,
+         static_cast<unsigned long>(boot_health.config().deadline_ms),
+         static_cast<int>(result));
+  fflush(stdout);
+}
 
 #if COLIBRINO_OTA_CONFIGURED
 constexpr char kOtaHostname[] = "sticks3-ptt";
@@ -853,6 +1221,10 @@ void beginOtaService() {
   ArduinoOTA.setHostname(kOtaHostname);
   ArduinoOTA.setPassword(OTA_PASS);
   ArduinoOTA.onStart([]() {
+    // An authenticated update reaching this image proves it serviceable; the
+    // Arduino Update path never checks PENDING_VERIFY, so confirm here rather
+    // than let the next image overwrite the only known-good slot.
+    confirmRunningImage("OTA_START");
     ota_in_progress = true;
     ota_last_percent = 255;
     lockForOta();
@@ -1102,7 +1474,7 @@ void logStatus(uint32_t now_ms) {
     ble_mouse.setBatteryLevel(static_cast<uint8_t>(battery_level));
   }
   diagnostics.printf(
-      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f,build=%s,batt=%ld,tele=%u,ble=%s,hid=%s,bonded=%u,repair=%u,ble_reports=%lu,ble_failures=%lu,heap=%lu,heap_largest=%lu\n",
+      "STATUS,%lu,board=%s,mode=%s,armed=%u,imu=%u,calibrated=%u,imu_blink=%u,ir=%u,ota=%s,ir_stage=%s,imu_stage=%s,gyro_x=%.3f,gyro_y=%.3f,gyro_z=%.3f,build=%s,batt=%ld,tele=%u,ble=%s,hid=%s,bonded=%u,repair=%u,ble_reports=%lu,ble_failures=%lu,heap=%lu,heap_largest=%lu,reset=%s,img=%s,lc=%u\n",
       static_cast<unsigned long>(now_ms),
       M5.getBoard() == m5::board_t::board_M5StickS3 ? "StickS3" : "UNKNOWN",
       modeName(mode), mouse_output.armed(), M5.Imu.isEnabled(), motion_calibrated,
@@ -1119,7 +1491,9 @@ void logStatus(uint32_t now_ms) {
       static_cast<unsigned long>(ble_mouse.successfulReports()),
       static_cast<unsigned long>(ble_mouse.reportFailures()),
       static_cast<unsigned long>(freeInternalHeap()),
-      static_cast<unsigned long>(largestInternalHeapBlock()));
+      static_cast<unsigned long>(largestInternalHeapBlock()),
+      resetReasonName(boot_reset_reason), otaImageStateName(boot_image_state),
+      static_cast<unsigned>(boot_crash_summary));
 }
 
 void handleButtons(uint32_t now_ms) {
@@ -1233,7 +1607,55 @@ void handleButtons(uint32_t now_ms) {
 
 }  // namespace
 
+// Arduino-ESP32 confirms a freshly installed OTA image inside initArduino(),
+// before setup() runs, unless this hook returns true. C linkage is mandatory:
+// the weak default lives in esp32-hal-misc.c and no header declares it, so a
+// mangled C++ definition would link fine and silently change nothing.
+extern "C" bool verifyRollbackLater(void) { return true; }
+
 void setup() {
+  // Boot health first: a crashing image must hit the attempt budget before it
+  // does anything else, and the breadcrumbs go out while the USB console is
+  // still reachable (USB.begin() below hands the PHY to TinyUSB for good).
+  setBootStage(kBootStageSetupStart);
+  boot_reset_reason = esp_reset_reason();
+  boot_previous_stage = rtc_previous_stage;
+  boot_previous_action = rtc_last_action;
+  rtc_last_action = kActionNone;
+  const bool crash_class = isCrashClassReset(boot_reset_reason);
+  // bootHealthEarlyMark() already counted this boot; the policy re-derives the
+  // number from the persisted count of earlier unhealthy boots.
+  const uint32_t earlier_unhealthy_boots =
+      rtc_unhealthy_boots == 0 ? 0 : rtc_unhealthy_boots - 1;
+  const uint32_t attempts = boot_health.begin(
+      crash_class ? BootResetClass::kWarm : BootResetClass::kColdOrExternal,
+      earlier_unhealthy_boots);
+  rtc_unhealthy_boots = attempts;
+  boot_image_state = readRunningImageState();
+  snprintf(boot_event_payload, sizeof boot_event_payload,
+           "reset=%s,raw=%d,slot=%s,ota_state=%s,attempts=%lu,last_stage=%lu,last_action=%s,build=%s",
+           resetReasonName(boot_reset_reason),
+           static_cast<int>(rtc_get_reset_reason(0)), runningSlotLabel(),
+           otaImageStateName(boot_image_state),
+           static_cast<unsigned long>(attempts),
+           static_cast<unsigned long>(boot_previous_stage),
+           bootActionName(boot_previous_action), COLIBRINO_BUILD_ID);
+  boot_crash_summary =
+      formatLastCrash(boot_crash_payload, sizeof boot_crash_payload);
+#if COLIBRINO_BOOT_CONSOLE_MS > 0
+  delay(COLIBRINO_BOOT_CONSOLE_MS);
+#endif
+  printf("EVENT,BOOT,%s\n", boot_event_payload);
+  if (boot_crash_summary != 0) {
+    printf("EVENT,LAST_CRASH,%s\n", boot_crash_payload);
+  }
+  fflush(stdout);
+  if (boot_health.shouldRollbackAtBoot()) {
+    requestImageRollback();
+  }
+  startBootDeadline();
+  setBootStage(kBootStageM5);
+
   // Disable every unused internal subsystem that could interfere with IR or
   // draw power. `output_power=false` keeps EXT_5V in its safe input/off mode.
   auto m5_config = M5.config();
@@ -1265,28 +1687,40 @@ void setup() {
   USB.productName("Colibrino StickS3 Prototype");
   USB.manufacturerName("Colibrino");
   USB.onEvent(onUsbEvent);
+  setBootStage(kBootStageUsb);
   USB.begin();
 
   calibration_started_ms = millis();
   gyro_calibrator.reset();
   diagnostics.println("Colibrino StickS3 prototype");
   diagnostics.printf("EVENT,BUILD,%s\n", COLIBRINO_BUILD_ID);
+  emitBootLines(false);
   logHeap("BEFORE_INIT");
   const long initial_battery = static_cast<long>(M5.Power.getBatteryLevel());
   const uint8_t ble_battery =
       initial_battery >= 0 && initial_battery <= 100
           ? static_cast<uint8_t>(initial_battery)
           : 0;
+  setBootStage(kBootStageBle);
+#if COLIBRINO_BLE_ENABLED
   if (!ble_mouse.begin(ble_battery)) {
     mouse_output.forceLock(MouseLockReason::kAdvertisingFailure, true);
   }
+#else
+  (void)ble_battery;
+  diagnostics.println("EVENT,BLE,DISABLED_BY_BUILD");
+#endif
+  setBootStage(kBootStageBleDone);
   updateMouseOutputState(millis());
   diagnostics.println(
       "CSV: IR,ms,valid,symbols,active_us,total_us,ratio,stage");
   diagnostics.printf("IMU type: %d (BMI270 expected: %d)\n",
                      M5.Imu.getType(), m5::imu_bmi270);
   startOtaNetworking(millis());
+  setBootStage(kBootStageWifi);
   drawIrScreen(millis());
+  setBootStage(kBootStageSetupDone);
+  boot_health.noteSetupComplete(millis());
 }
 
 void loop() {
@@ -1295,6 +1729,9 @@ void loop() {
   // work; motion integration uses sensor timestamps rather than this delay.
   M5.update();
   const uint32_t now_ms = millis();
+  if (boot_health.update(now_ms) == BootHealthAction::kConfirmImage) {
+    confirmRunningImage("HEALTHY");
+  }
   updateOta(now_ms);
 #if COLIBRINO_OTA_CONFIGURED
   if (ota_in_progress) {
@@ -1305,6 +1742,7 @@ void loop() {
   // After the OTA early-return on purpose: ArduinoOTA.handle() runs a whole
   // transfer synchronously, so no telemetry work can or should run mid-flash.
   diagnostics.service(now_ms);
+  reemitBootLinesOnAttach();
   updateMouseOutputState(now_ms);
   handleButtons(now_ms);
   updateCoexWindow(now_ms);

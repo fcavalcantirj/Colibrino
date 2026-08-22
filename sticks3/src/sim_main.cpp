@@ -9,6 +9,7 @@
 
 #include <cmath>
 
+#include "colibrino/boot_health.h"
 #include "colibrino/imu_blink_detector.h"
 #include "colibrino/mouse_output_policy.h"
 #include "colibrino/motion_controller.h"
@@ -115,6 +116,31 @@ void validateMouseOutputPolicy() {
   check("hid_policy_reconnect_no_stale_output",
         !policy.armed() && !policy.canReport() &&
             !policy.routeMotion(50, 50, 20).ready);
+}
+
+void validateBootHealthPolicy() {
+  using colibrino::BootHealthAction;
+  using colibrino::BootHealthPolicy;
+  using colibrino::BootResetClass;
+
+  BootHealthPolicy policy;
+  const uint32_t cold = policy.begin(BootResetClass::kColdOrExternal, 9);
+  check("boot_health_cold_reset_restarts_budget",
+        cold == 1 && !policy.shouldRollbackAtBoot() &&
+            policy.shouldRollbackAtDeadline());
+
+  policy.begin(BootResetClass::kWarm, 3);
+  const bool budget_exhausted = policy.shouldRollbackAtBoot();
+  policy.begin(BootResetClass::kWarm, 2);
+  check("boot_health_rollback_after_budget",
+        budget_exhausted && !policy.shouldRollbackAtBoot());
+
+  policy.noteSetupComplete(UINT32_MAX - 500);
+  const bool early = policy.update(9498) == BootHealthAction::kNone;
+  const bool confirmed = policy.update(9499) == BootHealthAction::kConfirmImage;
+  const bool once = policy.update(20000) == BootHealthAction::kNone;
+  check("boot_health_confirms_once_rollover",
+        early && confirmed && once && !policy.shouldRollbackAtDeadline());
 }
 
 colibrino::SeparationResult makeSeparation() {
@@ -261,6 +287,7 @@ void setup() {
   validateGyroCalibration();
   validatePointerMotion();
   validateMouseOutputPolicy();
+  validateBootHealthPolicy();
   validateBlinkDetector();
   validateImuBlinkSequence();
   validateFeasibilityProtocol();

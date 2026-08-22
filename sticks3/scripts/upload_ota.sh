@@ -16,6 +16,9 @@ if [ -f "$repo_dir/.env" ]; then
 fi
 
 pio_bin=${PLATFORMIO_CLI_BIN:-platformio}
+# Production env by default; COLIBRINO_PIO_ENV=m5stack-sticks3-noble selects the
+# instrumentation-only variant (same guards, same runbook).
+pio_env=${COLIBRINO_PIO_ENV:-m5stack-sticks3}
 ota_host=${COLIBRINO_OTA_HOST:-sticks3-ptt.local}
 secrets_file=${COLIBRINO_OTA_SECRETS:-}
 expected_mac=${COLIBRINO_OTA_EXPECTED_MAC:-}
@@ -51,18 +54,25 @@ if [ -z "$actual_mac" ] || [ "$actual_mac" != "$expected_mac" ]; then
 fi
 
 cd "$project_dir"
-"$pio_bin" run -e m5stack-sticks3
+build_log=$(mktemp)
+"$pio_bin" run -e "$pio_env" | tee "$build_log"
+build_id=$(sed -n 's/^COLIBRINO_BUILD_ID=//p' "$build_log" | tail -1)
+rm -f "$build_log"
+if [ -z "$build_id" ]; then
+  echo "Could not read COLIBRINO_BUILD_ID from the build output" >&2
+  exit 1
+fi
 
 core_json=$("$pio_bin" system info --json-output)
 core_dir=$(printf '%s\n' "$core_json" | sed -E 's/.*"core_dir": \{"title": "[^"]+", "value": "([^"]+)".*/\1/')
 espota="$core_dir/packages/framework-arduinoespressif32/tools/espota.py"
 pio_python="$core_dir/penv/bin/python"
-firmware="$project_dir/.pio/build/m5stack-sticks3/firmware.bin"
+firmware="$project_dir/.pio/build/$pio_env/firmware.bin"
 
 if [ ! -f "$espota" ] || [ ! -x "$pio_python" ] || [ ! -f "$firmware" ]; then
   echo "PlatformIO OTA tools or built firmware are missing" >&2
   exit 1
 fi
 
-echo "OTA -> $ota_host ($ota_ip); bedside-countdown-s3 is never a target"
+echo "OTA env=$pio_env build=$build_id -> $ota_host ($ota_ip); bedside-countdown-s3 is never a target"
 "$pio_python" "$espota" -i "$ota_ip" -p 3232 --auth="$ota_password" -f "$firmware"
