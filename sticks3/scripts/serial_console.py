@@ -15,7 +15,8 @@ Read-only, and careful with the control lines: the ROM USB-Serial/JTAG port
 turns DTR/RTS patterns into chip reset / download mode, so every port is opened
 with DTR and RTS deasserted; only ports whose USB product string matches
 --dtr-product (default "Colibrino", the TinyUSB composite, which needs DTR to
-transmit) get DTR asserted after opening. Ports are held exclusively while
+transmit and DTR+RTS to count as "connected") get DTR and RTS asserted after
+opening. Ports are held exclusively while
 open: stop this tool before any esptool/PlatformIO flash on the same port.
 
 Run with PlatformIO's Python (it ships pyserial):
@@ -99,8 +100,12 @@ class PortReader(threading.Thread):
             handle.open()
             self.opened = True
             if self.assert_dtr:
-                handle.dtr = True  # TinyUSB CDC only transmits with DTR asserted
-            self.sink.write(label, "<opened dtr=%d>" % (1 if self.assert_dtr else 0))
+                # TinyUSB transmits once DTR is asserted; the Arduino USBCDC
+                # "connected" flag (what the firmware's attach-replay watches)
+                # additionally requires RTS, exactly like `pio device monitor`.
+                handle.dtr = True
+                handle.rts = True
+            self.sink.write(label, "<opened dtr_rts=%d>" % (1 if self.assert_dtr else 0))
             buffer = b""
             last_byte = time.monotonic()
             while True:
