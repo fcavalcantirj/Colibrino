@@ -13,9 +13,11 @@ are verified. Click sensing remains experimental and fails closed.
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Portable motion and blink logic | Passing | Thirteen native Unity tests |
-| Generic ESP32-S3 execution | Passing | Wokwi CLI boots the cross-compiled image and reports eleven checks plus `COLIBRINO_SIM_PASS` |
-| Production firmware build | Passing | Pinned PlatformIO environment links composite CDC/HID firmware |
+| Portable motion, blink, output-policy, and boot-health logic | Passing | 33 native Unity tests (motion 4, optical 4, IMU 5, mouse output policy 11, boot health 9) |
+| Generic ESP32-S3 execution | Passing | Wokwi CLI boots the cross-compiled image and reports 18 checks plus `COLIBRINO_SIM_PASS` |
+| Production firmware build | Passing | Pinned PlatformIO environment links composite CDC/HID + NimBLE firmware; post-link `scripts/check_image.py` gate (`CHECK_IMAGE,PASS`) on every build |
+| BLE HID pointer (bonded, bounded, fail-closed) | Passing on tested unit (2026-08-22) | 60 s Just-Works window → `SECURE,bonded=1` locked; 2 s arm → head motion moves the Mac cursor; Mac Bluetooth off while armed → release + lock, no self-advertising; 30 s whitelist reconnect → secure, locked until re-arm; Wi-Fi+BLE coexistence 164.8–165.8 Hz / p50 5.0 ms / 0 drops / 0 BLE failures vs 170.3 Hz baseline. Pending: USB-cable topology switch, 10-min soak, Stage 2 with camera click |
+| OTA boot-health safety net and crash breadcrumbs | Passing on tested unit (2026-08-22) | OTA image boots `PENDING_VERIFY`, self-confirms `VALID` after 10 s of healthy loop, reports `EVENT,BOOT,…`/`EVENT,LAST_CRASH,…` (the 521bc26 dump was read back by the device itself); cable boot shows the breadcrumbs in the USB-Serial/JTAG window |
 | StickS3 display, buttons, and BMI270 | Passing on tested unit | BMI270 detected and calibrated; large blue Button A and status display exercised |
 | Native USB and head pointer | Passing on tested unit | Composite CDC/HID enumerated; stationary armed control emitted no reports; worn head motion moved the cursor |
 | Authenticated OTA | Passing on tested unit | One cable bootstrap and three authenticated uploads passed at `sticks3-ptt.local`; the first two round trips returned locked and calibrated |
@@ -83,9 +85,26 @@ These commands do not upload firmware. Before any upload, identify the exact
 serial port, preserve the existing flash when it belongs to another project,
 and keep recovery images and logs under ignored `.device-backups/`.
 
-The production build pins `espressif32@6.12.0` and `M5Unified@0.2.19`. It uses
-native TinyUSB mode because hardware USB-JTAG CDC mode cannot host the required
-composite HID mouse interface.
+The production build pins `espressif32@6.12.0`, `M5Unified@0.2.19`, `M5GFX@0.2.26`,
+and `NimBLE-Arduino@2.5.1`. It uses native TinyUSB mode because hardware
+USB-JTAG CDC mode cannot host the required composite HID mouse interface.
+Every production link runs `scripts/check_image.py`: the OTA rollback hook must
+be the constant-true override, `esp_reset_reason` and the boot/crash breadcrumb
+strings must be linked, and the true internal-DRAM static footprint
+(`.dram0.dummy + .dram0.data + .dram0.bss`; PlatformIO's RAM figure hides the
+IRAM shadow) must stay under 200 KB. `m5stack-sticks3-noble` builds the same
+image with the BLE bring-up compiled out (build id suffixed `-noble`) for
+safety-net proofs. Native tests: 33 cases; Wokwi gate: 18 checks.
+
+StickS3 side button (official manual): long press = download mode (internal
+green LED), single click = power on / reset, double click = power off. After an
+`esptool` session the chip stays in the latched download mode until a single
+click. The USB-C port carries the USB-Serial/JTAG console only from a hard
+reset until `USB.begin()`; after that only the TinyUSB composite exists and
+panic text goes to UART0 (HAT2-Bus pin 10 = G43 TX, pin 12 = G44 RX, pin 1 =
+GND, 3.3 V USB-TTL @115200). `scripts/serial_console.py` tails every
+`/dev/cu.usbmodem*` (plus `--uart`) with reconnects; stop it before any serial
+flash.
 
 ## Authenticated OTA
 
@@ -110,8 +129,16 @@ Espressif's authenticated OTA tool:
 ```
 
 The wrapper explicitly refuses a different S3 such as
-`bedside-countdown-s3`. OTA updates firmware; they do not provide wireless HID
-or replace USB CDC diagnostics. The one-time cable bootstrap was completed on
+`bedside-countdown-s3`; `COLIBRINO_PIO_ENV` selects the environment and the
+banner prints env + build id before uploading. OTA images are protected by a
+boot-health safety net: the image starts `PENDING_VERIFY`, confirms itself
+(`EVENT,OTA_IMAGE,CONFIRMED`) only after `setup()` plus 10 s of healthy loop,
+rolls back by the bootloader after one failed boot otherwise, rolls back on a
+45 s boot deadline or after 3 crash-class boots, and every boot prints
+`EVENT,BOOT,reset=…,slot=…,ota_state=…,attempts=…,last_stage=…` plus
+`EVENT,LAST_CRASH,…` (flash core-dump summary) before `USB.begin()` and
+replays them on every CDC/TCP attach. OTA updates firmware; they do not replace
+USB CDC diagnostics. The one-time cable bootstrap was completed on
 2026-08-15. Two subsequent authenticated round trips succeeded, each resolving
 to MAC `AC:27:6E:D2:68:B8`; after each reboot CDC reported HID locked, external
 IR off, BMI270 calibrated, blink clicks disabled, and OTA ready. Subsequent
@@ -233,7 +260,8 @@ side power/reset control is not part of the Colibrino workflow.
 | IR probe, power off | Tap: motion monitor; hold 2 seconds: enable IR after confirming no external 5 V source |
 | IR probe, power on | Tap: start/repeat guided test; hold 2 seconds: disable IR |
 | Motion monitor, idle/result | Tap: start/repeat IMU validation; hold 2 seconds: mouse mode |
-| Mouse, locked | Tap: IR mode; hold 2 seconds after calibration: arm output |
+| Mouse, locked, no ready transport | Tap: IR mode; hold 2 seconds: open the BLE pairing window (60 s public when no bond, 30 s whitelist-only reconnect when bonded); hold 5 seconds in a bonded reconnect window: forget bond + re-pair |
+| Mouse, locked, transport ready (USB data mount or bonded+encrypted BLE) | Tap: IR mode; hold 2 seconds after calibration: arm output (wired-preferred: USB wins over BLE; any topology change locks) |
 | Mouse, armed | Hold 2 seconds: lock output |
 
 M5Unified's hold threshold is explicitly matched to Colibrino's two-second
@@ -256,7 +284,8 @@ stream is mirrored to a read-only TCP port (35533, advertised as
 lines dropped with an explicit `EVENT,TELEMETRY,DROPPED,<total>` counter when
 the link stalls. Boot prints `EVENT,BUILD,<sha>`, a client is greeted with
 `EVENT,TELEMETRY,CONNECTED,<sha>`, and the 1 Hz `STATUS` record ends with
-`build=<sha>,batt=<pct>,tele=<0|1>`. Worn trace capture runs cable-free over
+`build=<sha>,batt=<pct>,tele=<0|1>,ble=<state>,hid=NONE|USB|BLE,bonded=,repair=,ble_reports=,ble_failures=,heap=,heap_largest=,reset=,img=,lc=`.
+Worn trace capture runs cable-free over
 this mirror (`tools/capture_session.py --tcp`; see
 `../docs/V2_TRACE_CAPTURE_PROTOCOL.md`) because a USB cable is a physical
 anchor on the head mount; the USB path stays available for bench diagnostics.
@@ -376,7 +405,12 @@ design before connection.
 | `test/` | Native Unity regression tests |
 | `src/sim_main.cpp` | Deterministic ESP32-S3 Wokwi validation firmware |
 | `include/colibrino_secrets.h.example` | Untracked Wi-Fi and OTA configuration template |
-| `scripts/upload_ota.sh` | Authenticated OTA build/upload with hostname and hardware-MAC guard |
+| `scripts/upload_ota.sh` | Authenticated OTA build/upload with hostname and hardware-MAC guard (`COLIBRINO_PIO_ENV` selects the env) |
+| `scripts/check_image.py` | Post-link gate: rollback hook, breadcrumbs, true internal-DRAM budget |
+| `scripts/serial_console.py` | Reconnecting USB-Serial/JTAG + CDC (+ UART0 tap) logger for diagnosis boots |
+| `src/ble_mouse_transport.*` | NimBLE bounded bonded HID transport; callbacks publish atomic facts only |
+| `include/colibrino/mouse_output_policy.h`, `src/mouse_output_policy.cpp` | Portable fail-closed output authority shared by USB and BLE |
+| `include/colibrino/boot_health.h`, `src/boot_health.cpp` | Portable OTA confirm / rollback decision policy |
 | `tools/replay_imu_capture.cpp` | Exact production-detector replay of ignored device CSV |
 | `diagram.json`, `wokwi.toml` | Wokwi board and firmware configuration |
 | `PORT_PLAN.json` | Machine-readable facts, task state, and hardware acceptance criteria |
@@ -384,8 +418,8 @@ design before connection.
 ## Definition of done
 
 A software-only change is ready to hand off when native tests pass, the
-production image builds without upload, the Wokwi gate passes when portable
-logic changed, `PORT_PLAN.json` remains valid JSON, generated files and secrets
+production image builds without upload with `CHECK_IMAGE,PASS`, the Wokwi gate
+passes when portable logic changed, `PORT_PLAN.json` remains valid JSON, generated files and secrets
 remain untracked, every retained IMU log is replayed after detector tuning,
 and every hardware-dependent claim is still labeled as such. Never send a
 credential-bearing production image to Wokwi; its simulator environment builds

@@ -52,3 +52,31 @@ signal. The gyro click channel is closed. Active experiment: macOS
 "alternative pointer actions" (webcam Eye Blink → click) with the StickS3 as
 pointer; on-device future class is VCNL4040/TMD2635 IR-proximity (VL53L4CD
 ToF rejected on physics). Details: PROJECT_KNOWLEDGE 2026-08-21 entry.
+
+## BLE HID pointer + boot-loop incident (2026-08-21/22)
+
+- Branch `agent/ble-hid-pointer` (not merged): NimBLE bonded bounded HID
+  transport behind the portable fail-closed `MouseOutputPolicy` (USB +
+  BLE, wired-preferred). Hardware-validated cable-free 2026-08-22: pairing,
+  arming, head-pointer motion ("horizontal very good, vertical weaker" —
+  tuning item), disconnect/reconnect, Wi-Fi+BLE coexistence 164.8–165.8 Hz /
+  0 drops vs 170.3 Hz baseline. Pending: USB-cable topology switch, 10-min
+  soak, Stage 2 (BLE pointer + Mac camera click). Record: PORT_PLAN T16/T17,
+  PROJECT_KNOWLEDGE 2026-08-22 entry,
+  `docs/handovers/2026-08-21-ble-hid-pointer/` (PLAN-r2, REVIEW-r2, INCIDENT).
+- Root cause of the 521bc26 boot loop (flash core dump): `WiFi.setSleep(false)`
+  after the BT controller was enabled aborts the Wi-Fi task on IDF 4.4
+  (coexistence requires modem sleep — official manual). Never `WIFI_PS_NONE`
+  with BLE on this core.
+- Why it was unrecoverable and what now prevents it: Arduino 2.0.x confirms
+  OTA images before `setup()` unless `extern "C" bool verifyRollbackLater()`
+  returns true (C linkage mandatory); `USB.begin()` hands the USB PHY to
+  TinyUSB for good (one USB-Serial/JTAG console window per hard reset). The
+  firmware now self-confirms after 10 s of healthy loop, self-reports
+  `EVENT,BOOT,…` / `EVENT,LAST_CRASH,…` before `USB.begin()` and on every
+  attach, rolls back on a 45 s deadline or 3 crash-class boots, and every link
+  runs `scripts/check_image.py`. Do not disable any of it.
+- StickS3 side button: long press = download mode, single click = reset,
+  double click = power off; esptool leaves the chip in download mode until a
+  click. UART0 tap = HAT2-Bus pin 10 G43 / 12 G44 / 1 GND. Device at wrap:
+  `ff1f7d2` on app1 (VALID), `254fb7e` on app0.

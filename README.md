@@ -20,7 +20,7 @@ tetraplegia, artrogripose, amputações e paralisia cerebral.
 | Target | Hardware | Click sensor | Status |
 | --- | --- | --- | --- |
 | Legacy | Arduino Leonardo or Pro Micro, MPU6050 | External TCRT5000 | Historical working implementation; preserved under `arduino project/` |
-| StickS3 | M5Stack StickS3 with internal BMI270 | Experimental BMI270 blink gesture; optional future TCRT5000 | Composite USB, BMI270, controls, and head pointer verified on hardware; safe blink input still under validation |
+| StickS3 | M5Stack StickS3 with internal BMI270 | Off-device macOS camera blink (validated live 2026-08-21); IMU click channel closed | Composite USB, BMI270, controls, and head pointer verified on hardware; **bonded BLE HID pointer validated cable-free on 2026-08-22** (pairing, arming, disconnect/reconnect, Wi-Fi+BLE coexistence within the telemetry baseline) with an OTA boot-health safety net; pending: USB-cable topology switch test, 10-min soak, Stage 2 with camera click — branch `agent/ble-hid-pointer` |
 
 The StickS3 port is the active development path. It does not replace or modify
 the legacy AVR firmware.

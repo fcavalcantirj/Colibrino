@@ -46,6 +46,21 @@ at a 1.1 dps residual entry threshold. Retained still/head captures replay with
 zero events, but this new pattern remains hardware-unverified and click output
 therefore remains gated off until a fresh current-boot probe passes.
 
+The IMU blink-click channel is closed on evidence (2026-08-21): the click comes
+from the macOS camera (Alternative Pointer Actions) or a future near-eye IR
+proximity sensor; the BMI270 is the head pointer plus motion veto only.
+
+BLE HID pointer (branch `agent/ble-hid-pointer`, 2026-08-22): NimBLE-Arduino
+2.5.1 bonded, bounded transport behind one portable fail-closed
+`MouseOutputPolicy` shared with USB (wired-preferred, never simultaneous);
+hardware-validated cable-free (pairing, arming, disconnect/reconnect, Wi-Fi +
+BLE coexistence within the telemetry baseline); pending the USB-cable topology
+switch test, a 10-minute soak, and Stage 2 with the camera click. The 521bc26
+boot loop was root-caused (`WiFi.setSleep(false)` with the BT controller
+enabled aborts on IDF 4.4 coexistence) and the firmware now carries a permanent
+OTA boot-health safety net with boot/crash breadcrumbs (`T16`, `T17`,
+`docs/handovers/2026-08-21-ble-hid-pointer/INCIDENT-521bc26.md`).
+
 `sticks3/PORT_PLAN.json` is the machine-readable source of truth for validated
 facts, task status, simulation boundaries, and the TCRT5000 purchase decision.
 Keep it syntactically valid and consistent with the prose documentation.
@@ -163,6 +178,14 @@ pattern, impulse duration gates, pointer-scale motion cancellation, and quiet
 and click refractory periods. Do not reduce it to evenly spaced impulses; the
 live control data disproves that design.
 
+`mouse_output_policy.*` is the single output authority for every HID transport
+(USB and BLE): boot locked, deliberate-hold arming, release-all + disarm on any
+fault/topology change, bounded BLE cadence. `boot_health.*` is the portable OTA
+confirm/rollback decision (attempt budget, healthy window, deadline); the IDF
+calls live in `main.cpp`. `ble_mouse_transport.*` (board code) owns NimBLE:
+callbacks publish atomic facts; the cooperative loop makes every safety
+transition.
+
 `sticks3/src/sim_main.cpp` is deterministic validation firmware, not production
 application code. The Wokwi environment compiles it together with the actual
 portable production sources and excludes `main.cpp` and `ir_probe.cpp`.
@@ -182,9 +205,13 @@ trace capture is cable-free by decision (a USB cable is a physical anchor that
 distorts the measured blink impulses); the free-run capture stage
 (CAPTURE_FREE_RUN) never sets the blink-validation gate and never counts
 toward worn acceptance. Button A cycles IR probe,
-motion monitor, and mouse mode only while mouse output is locked. In mouse mode,
-holding A for two seconds after calibration toggles armed versus locked output.
-The device cannot leave mouse mode while armed.
+motion monitor, and mouse mode only while mouse output is locked. In mouse mode with a
+ready transport (USB data mount, or bonded + encrypted BLE), holding A for two
+seconds after calibration toggles armed versus locked output; with no ready
+transport the same hold opens a bounded BLE window (60 s public when bondless,
+30 s whitelist-only when bonded) and a 5 s hold in a bonded reconnect window
+forgets the bond and re-pairs. Pairing never arms. The device cannot leave
+mouse mode while armed.
 
 In IR mode, holding the large blue button for two seconds toggles the controlled
 IR power rail. When IR is powered, tapping it starts or repeats the guided
@@ -212,6 +239,29 @@ fails.
 M5Stack specifies that the speaker amplifier interferes with onboard IR
 reception. Keep internal speaker initialization disabled and preserve the
 explicit M5PM1 amplifier-disable operation during startup.
+
+Wi-Fi + Bluetooth coexistence on this core (Arduino-ESP32 2.0.17 = IDF 4.4.7):
+never request `WIFI_PS_NONE` (`WiFi.setSleep(false)`) while the BT controller
+is or will be enabled — the Wi-Fi task aborts (`pm_set_sleep_type`), which was
+the 521bc26 boot loop. The BLE build keeps `WIFI_PS_MIN_MODEM`; throughput
+under that setting is a measured number, never assumed.
+
+OTA boot-health is a standing requirement for every firmware image: keep the
+`extern "C" bool verifyRollbackLater()` override (C linkage is mandatory),
+the health-gated confirmation, the deadline and attempt budget, the boot and
+crash breadcrumbs, and the `scripts/check_image.py` post-link gate; never
+disable them to make a build pass. Any build that changes board-level init
+(new RF stack or tasks, USB mode, partition table, core or library upgrade)
+gets a cable smoke boot with the serial console before its first OTA. Read the
+flash core dump (`esptool read_flash 0x7F0000 0x10000`, `esp-coredump` against
+the retained ELF) before guessing at a boot loop; a cable recovery that rewrites
+only the app slots leaves it intact.
+
+StickS3 side button semantics (official manual): long press = download mode,
+single click = power on / reset, double click = power off; an esptool session
+leaves the chip in the latched download mode until a single click. The USB-C
+console exists only from a hard reset until `USB.begin()`; panic text needs the
+UART0 tap on the HAT2-Bus (pin 10 = G43 TX, pin 12 = G44 RX, pin 1 = GND).
 
 USB mouse output must default to locked. Preserve bounded signed-byte reports,
 stationary calibration, measured BMI270 timestamps, invalid gaps producing no
@@ -249,7 +299,8 @@ Run from `sticks3/`:
 
 ```sh
 platformio test -e native
-platformio run -e m5stack-sticks3
+platformio run -e m5stack-sticks3            # runs scripts/check_image.py post-link
+platformio run -e m5stack-sticks3-noble      # BLE bring-up compiled out, id suffix -noble
 ./scripts/run_wokwi.sh
 python3 -m json.tool PORT_PLAN.json >/dev/null
 ```
@@ -260,7 +311,8 @@ On this workstation PlatformIO may be available only at:
 /Users/fcavalcanti/.platformio/penv/bin/platformio
 ```
 
-The native suite currently contains thirteen Unity cases; the authoritative
+The native suite currently contains 33 Unity cases (13 below plus 11 in
+`test_mouse_output_policy` and 9 in `test_boot_health`); the authoritative
 list is the `RUN_TEST` names in `sticks3/test/*/test_main.cpp`: motion
 `calibration_accepts_stationary_samples`, `calibration_rejects_motion`,
 `pointer_deadzone_suppresses_bias_and_noise`,
@@ -274,14 +326,20 @@ list is the `RUN_TEST` names in `sticks3/test/*/test_main.cpp`: motion
 Refractory rejection is asserted only by the Wokwi gate.
 
 The no-upload production build currently uses `espressif32@6.12.0`,
-Arduino-ESP32 2.0.17, M5Unified 0.2.19, and M5GFX 0.2.26. The last verified OTA
-image used 65,180 bytes of reported RAM and 1,048,465 bytes of application flash
-partition. Treat sizes as observations, not permanent acceptance thresholds.
+Arduino-ESP32 2.0.17, M5Unified 0.2.19, M5GFX 0.2.26, and NimBLE-Arduino 2.5.1.
+The last hardware-validated BLE image (`ff1f7d2`, 2026-08-22) used 104,788 B
+of reported RAM (32.0 %), 1,255,389 B of application flash (37.6 %), and
+176,720 B of true internal-DRAM static footprint (`.dram0.dummy` + data + bss;
+the gate ceiling is 200 KB); free internal heap on hardware ≈ 145 KB with BLE
+idle and ≈ 112–137 KB while armed and streaming. Treat sizes as observations,
+not permanent acceptance thresholds.
 
 The Wokwi wrapper loads `WOKWI_CLI_TOKEN` from the process or the ignored
 repository-root `.env`. `PLATFORMIO_CLI_BIN` and `WOKWI_CLI_BIN` override CLI
 locations. Never print, stage, or commit the token. Success requires
-`COLIBRINO_SIM_PASS`; the current gate emits eleven passing checks. Generated
+`COLIBRINO_SIM_PASS`; the current gate emits 18 passing checks. Neither Wokwi
+nor Espressif QEMU implements Bluetooth, so no simulator can reach BLE
+bring-up; the cable smoke boot and the boot-health safety net are the gates. Generated
 `.pio/` contents remain ignored.
 
 ## Simulator truth
