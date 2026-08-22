@@ -1264,7 +1264,19 @@ void startOtaNetworking(uint32_t now_ms) {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(kOtaHostname);
   WiFi.setAutoReconnect(true);
+#if COLIBRINO_BLE_ENABLED
+  // 521bc26 root cause (flash core dump, task `wifi`): with the BT controller
+  // enabled, requesting WIFI_PS_NONE makes the Wi-Fi driver abort inside
+  // pm_set_sleep_type() — libcoexist: "Should enable WiFi modem sleep when
+  // both WiFi and Bluetooth are enabled". ESP-IDF v4.4.7 ESP32-S3 Wi-Fi
+  // driver guide, "Station Sleep": "Disabling modem sleep entirely is not
+  // possible for Wi-Fi and Bluetooth coexist mode" (lifted only in IDF 5.0+,
+  // esp-idf#9595). The BLE build keeps the IDF default; the telemetry rate
+  // under this setting is re-measured by the coexistence gate, not assumed.
+  WiFi.setSleep(WIFI_PS_MIN_MODEM);
+#else
   WiFi.setSleep(false);
+#endif
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   ota_network_started = true;
   ota_network_started_ms = now_ms;
