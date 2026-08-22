@@ -1,7 +1,7 @@
 ---
 slug: ble-pointer-acceptance
 date: 2026-08-22
-status: open
+status: approved
 round: 0
 author_session: Builder session of the BLE HID pointer (PLAN-r2 executor, 2026-08-21/22): root-caused the 521bc26 boot loop, shipped the OTA boot-health safety net, ran Steps A/B/C and the first cable-free BLE bench with Felipe
 ---
